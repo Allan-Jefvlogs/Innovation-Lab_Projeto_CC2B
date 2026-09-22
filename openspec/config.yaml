@@ -1,0 +1,96 @@
+schema: spec-driven
+githubCopilot:
+  cloudAgent: true
+
+# Contexto global do projeto
+context: |
+  Project: Sistema de Gerenciamento de Estoque.
+
+  Domain:
+    Sistema destinado ao controle de produtos e movimentações
+    de estoque de uma empresa.
+
+    O sistema contempla inicialmente:
+    - usuários e perfis;
+    - categorias;
+    - produtos;
+    - fornecedores;
+    - estoque;
+    - entradas de estoque;
+    - saídas de estoque;
+    - histórico de movimentações;
+    - dashboard;
+    - relatórios.
+
+  Tech stack:
+    - Frontend: Reflex.
+    - Backend: Xano.
+    - Agente de IA: GitHub Copilot.
+    - Conhecimento e validação de XanoScript: Xano Developer MCP.
+    - Especificação e planejamento: OpenSpec.
+    - Controle de versão: Git e GitHub.
+
+  Architecture:
+    O Reflex deve ser utilizado exclusivamente para implementação
+    do frontend.
+
+    O Xano será responsável pelo backend, lógica de negócio,
+    persistência dos dados e regras de autorização.
+
+  Security:
+    As regras de autorização devem ser aplicadas no backend.
+    A interface frontend não deve ser considerada um mecanismo
+    suficiente de segurança.
+
+    O acesso às funcionalidades deve respeitar os perfis
+    e permissões dos usuários.
+
+  Development:
+    O projeto será desenvolvido de forma incremental utilizando
+    OpenSpec.
+
+    Mudanças relevantes devem ser especificadas antes da
+    implementação.
+
+    O agente deve consultar o contexto do projeto antes de realizar
+    alterações significativas.
+
+  Xano:
+    Quando houver dúvida sobre XanoScript, o agente deve consultar
+    a documentação apropriada e utilizar o Xano Developer MCP
+    para consulta e validação quando aplicável.
+
+  Language:
+    Os artefatos do OpenSpec e a documentação do projeto devem
+    ser escritos em português brasileiro.
+
+# Regras específicas para os artefatos
+rules:
+  proposal:
+    - Descrever claramente o problema, objetivo e escopo da mudança.
+    - Identificar o que está fora do escopo quando necessário.
+    - Evitar incluir detalhes de implementação que ainda não tenham sido decididos.
+
+  specs:
+    - Escrever requisitos claros e verificáveis.
+    - Utilizar cenários para descrever comportamentos relevantes.
+    - Considerar regras de acesso e integridade das informações quando aplicável.
+
+  tasks:
+    - Dividir a implementação em tarefas pequenas e verificáveis.
+    - Evitar incluir tarefas não relacionadas à mudança atual.
+    - Considerar validação e testes como parte da implementação.
+
+# Orientações para operações
+operations:
+  apply:
+    guidance:
+      - Verificar se a implementação corresponde à especificação da change.
+      - Executar as verificações relevantes antes de concluir a mudança.
+      - Não implementar funcionalidades fora do escopo aprovado.
+
+  archive:
+    guidance:
+      - Confirmar que a implementação corresponde à especificação.
+      - Confirmar que as tarefas da change foram concluídas.
+      - Preservar a coerência entre as specs consolidadas e a implementação.
