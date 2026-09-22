@@ -6,4 +6,3 @@ workspace "Meu espaço" {
     sql_names        : false
     sql_columns      : true
   }
-}
