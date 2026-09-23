@@ -1,12 +1,13 @@
 # Proposal
 
-## Por que?
+## Why
 
 O projeto possui uma visão de negócio e um modelo conceitual, ainda não possui uma definição de como as regras fundamentais do domínio de estoque devem funcionar. Sem essa fundação, o frontend Reflex e o backend Xano podem evoluir com nomes, estados, relacionamentos e contratos incompatíveis, aumentando o retrabalho nas mudanças de autenticação, cadastros e movimentações.
 
 Esta mudança estabelece o vocabulário e os contratos comportamentais mínimos que as próximas changes deverão respeitar.
 
-## O que muda?
+
+## What Changes
 
 - Definir as entidades canônicas do domínio inicial: usuário, perfil, categoria, produto, fornecedor, estoque e movimentação de estoque.
 - Definir os relacionamentos e estados relevantes para produtos, estoque e movimentações.
@@ -24,7 +25,7 @@ Esta mudança estabelece o vocabulário e os contratos comportamentais mínimos 
 
 - Nenhuma.
 
-## Impacto
+## Impact
 
 **OpenSpec:** cria a primeira capability consolidada para orientar as próximas changes.
 - **Xano:** servirá como autoridade para persistência, validações e regras de negócio; as estruturas demonstrativas existentes deverão ser avaliadas antes de serem reutilizadas.

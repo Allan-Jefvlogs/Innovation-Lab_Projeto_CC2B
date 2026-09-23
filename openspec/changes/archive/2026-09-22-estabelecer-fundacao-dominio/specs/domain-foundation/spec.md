@@ -1,10 +1,10 @@
-# Spec Delta
+# Spec
 
 ## Purpose
 
 Esta capability estabelece o contrato comportamental comum do Sistema de Gerenciamento de Estoque. Ela define o vocabulário, os relacionamentos e as garantias mínimas que devem ser respeitados pelas mudanças de autenticação, cadastros, estoque, histórico, dashboard e relatórios.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: O sistema MUST usar um vocabulário canônico de domínio
 
