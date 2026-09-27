@@ -40,6 +40,11 @@ table user {
         }
       }
     }
+
+    // Domain profile assigned by a Leader; null accounts cannot use inventory APIs.
+    int inventory_profile_id? {
+      table = "inventory_profile"
+    }
   }
 
   index = [
