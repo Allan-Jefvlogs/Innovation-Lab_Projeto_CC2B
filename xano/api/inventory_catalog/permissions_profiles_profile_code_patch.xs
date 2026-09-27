@@ -38,7 +38,7 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
 
     foreach ($input.permissions) {
       each as $permission_code {
-        precondition (($catalog_codes|some:$$ == $permission_code)) {
+        precondition ($catalog_codes|some:$$ == $permission_code) {
           error_type = "inputerror"
           error = "UNKNOWN_PERMISSION_CODE"
         }
@@ -74,27 +74,38 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
             }
 
             db.query inventory_profile_permission {
-              join = {
-                permission: {
-                  table: "inventory_permission",
-                  type: "inner",
-                  where: $db.inventory_profile_permission.permission_id == $db.inventory_permission.id
-                }
-              }
               where = $db.inventory_profile_permission.profile_id == $target_profile.id
-              eval = {permission_code: $db.inventory_permission.code}
               return = {type: "list"}
             } as $current_grants
 
             var $current_codes {
-              value = $current_grants|map:$$.permission_code
+              value = []
             }
+
+            foreach ($current_grants) {
+              each as $grant {
+                var $matched_permission {
+                  value = $catalog|find:$$.id == $grant.permission_id
+                }
+
+                conditional {
+                  if ($matched_permission != null) {
+                    array.push $current_codes {
+                      value = $matched_permission.code
+                    }
+                  }
+                }
+              }
+            }
+
             var $added_codes {
               value = $input.permissions|diff:$current_codes
             }
+
             var $removed_codes {
               value = $current_codes|diff:$input.permissions
             }
+
             var $next_revision {
               value = $locked_profile.permission_revision + 1
             }
@@ -112,7 +123,7 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
 
                 db.add inventory_profile_permission {
                   data = {
-                    profile_id: $target_profile.id,
+                    profile_id   : $target_profile.id
                     permission_id: $permission.id
                   }
                 } as $new_grant
@@ -128,25 +139,26 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
             // The unique audit key serializes commits for the same prior revision.
             db.add inventory_permission_audit {
               data = {
-                actor_user_id: $auth.id,
-                target_profile_id: $target_profile.id,
-                revision_before: $locked_profile.permission_revision,
-                revision_after: $next_revision,
-                permissions_added: $added_codes,
+                actor_user_id      : $auth.id
+                target_profile_id  : $target_profile.id
+                revision_before    : $locked_profile.permission_revision
+                revision_after     : $next_revision
+                permissions_added  : $added_codes
                 permissions_removed: $removed_codes
               }
             } as $audit_event
 
             var.update $replacement {
               value = {
-                profile_code: $target_profile.code,
-                permission_revision: $next_revision,
-                permissions: $input.permissions
+                profile_code       : $target_profile.code
+                permission_revision: $next_revision
+                permissions        : $input.permissions
               }
             }
           }
         }
       }
+
       catch {
         db.query inventory_permission_audit {
           where = $db.inventory_permission_audit.target_profile_id == $target_profile.id && $db.inventory_permission_audit.revision_before == $input.permission_revision
@@ -160,6 +172,7 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
               value = "PERMISSION_REVISION_CONFLICT"
             }
           }
+
           else {
             throw {
               name = "PERMISSION_UPDATE_FAILED"
@@ -172,4 +185,5 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
   }
 
   response = $replacement
+  guid = "HFMPQwLvgtIRbFNFEyBHTaTKRX0"
 }
