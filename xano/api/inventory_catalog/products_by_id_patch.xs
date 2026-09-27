@@ -139,7 +139,7 @@ query "products/by_id/{product_id}" verb=PATCH {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "PRODUCT_UPDATE_FAILED"
               value = $error.message
             }
           }

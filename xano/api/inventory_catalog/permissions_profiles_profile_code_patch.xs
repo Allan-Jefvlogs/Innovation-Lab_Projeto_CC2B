@@ -162,7 +162,7 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "PERMISSION_UPDATE_FAILED"
               value = $error.message
             }
           }

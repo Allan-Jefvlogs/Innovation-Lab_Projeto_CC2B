@@ -42,7 +42,7 @@ query "categories" verb=POST {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "CATEGORY_CREATE_FAILED"
               value = $error.message
             }
           }

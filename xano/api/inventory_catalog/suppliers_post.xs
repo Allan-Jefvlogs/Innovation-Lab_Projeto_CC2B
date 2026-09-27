@@ -57,7 +57,7 @@ query "suppliers" verb=POST {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "SUPPLIER_CREATE_FAILED"
               value = $error.message
             }
           }

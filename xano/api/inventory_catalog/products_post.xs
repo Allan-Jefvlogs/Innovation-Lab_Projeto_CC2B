@@ -68,7 +68,7 @@ query "products" verb=POST {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "PRODUCT_CREATE_FAILED"
               value = $error.message
             }
           }

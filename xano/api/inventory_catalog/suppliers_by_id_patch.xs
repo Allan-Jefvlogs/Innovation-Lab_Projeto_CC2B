@@ -128,7 +128,7 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "SUPPLIER_UPDATE_FAILED"
               value = $error.message
             }
           }

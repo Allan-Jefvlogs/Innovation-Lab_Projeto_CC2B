@@ -60,7 +60,7 @@ query "categories/by_id/{category_id}" verb=PATCH {
           }
           else {
             throw {
-              name = $error.name|to_text
+              name = "CATEGORY_UPDATE_FAILED"
               value = $error.message
             }
           }
