@@ -20,17 +20,104 @@ query "permissions" verb=GET {
       return = {type: "list"}
     } as $permissions
 
-    db.direct_query {
-      sql = "SELECT ipp.id, ipp.profile_id, ipp.permission_id, profile.code AS profile_code, permission.code AS permission_code FROM inventory_profile_permission AS ipp INNER JOIN inventory_profile AS profile ON profile.id = ipp.profile_id INNER JOIN inventory_permission AS permission ON permission.id = ipp.permission_id ORDER BY ipp.profile_id ASC, ipp.permission_id ASC"
-      response_type = "list"
-    } as $grants
+    db.query inventory_profile_permission {
+      sort = {
+        profile_id: "asc"
+        permission_id: "asc"
+      }
+      return = {type: "list"}
+    } as $grant_rows
+
+    var $enriched_grants {
+      value = []
+    }
+
+    var $stockkeeper_permissions {
+      value = []
+    }
+
+    var $read_only_permissions {
+      value = []
+    }
+
+    var $permission_matrix {
+      value = []
+    }
+
+    foreach ($grant_rows) {
+      each as $grant {
+        db.get "inventory_profile" {
+          field_name = "id"
+          field_value = $grant.profile_id
+        } as $profile
+
+        db.get "inventory_permission" {
+          field_name = "id"
+          field_value = $grant.permission_id
+        } as $permission
+
+        var $grant_item {
+          value = {
+            profile_id: $grant.profile_id,
+            permission_id: $grant.permission_id,
+            profile_code: $profile.code,
+            permission_code: $permission.code
+          }
+        }
+
+        array.push $enriched_grants {
+          value = $grant_item
+        }
+
+        switch ($grant_item.profile_code) {
+          case ("stockkeeper") {
+            array.push $stockkeeper_permissions {
+              value = $grant_item.permission_code
+            }
+          } break
+          case ("read_only") {
+            array.push $read_only_permissions {
+              value = $grant_item.permission_code
+            }
+        } break
+      }
+    }
+    }
+
+    var $stockkeeper_profile {
+      value = $profiles|find:$$.code=="stockkeeper"
+    }
+
+    var $read_only_profile {
+      value = $profiles|find:$$.code=="read_only"
+    }
+
+    var.update $permission_matrix {
+      value = [
+        {
+          profile_code: "administrator",
+          permissions: "integral",
+          access_scope: "integral",
+          editable: false
+        },
+        {
+          profile_code: "stockkeeper",
+          permissions: $stockkeeper_permissions,
+          permission_revision: $stockkeeper_profile.permission_revision
+        },
+        {
+          profile_code: "read_only",
+          permissions: $read_only_permissions,
+          permission_revision: $read_only_profile.permission_revision
+        }
+      ]
+    }
   }
 
   response = {
     profiles: $profiles,
     permissions: $permissions,
-    grants: $grants,
-    administrator_access: "all_inventory_capabilities",
-    editable_profile_codes: ["stockkeeper", "read_only"]
+    permission_matrix: $permission_matrix,
+    status: "ok"
   }
 }
