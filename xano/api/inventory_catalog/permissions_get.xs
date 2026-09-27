@@ -21,25 +21,38 @@ query "permissions" verb=GET {
     } as $permissions
 
     db.query inventory_profile_permission {
-      join = {
-        permission: {
-          table: "inventory_permission",
-          type: "inner",
-          where: $db.inventory_profile_permission.permission_id == $db.permission.id
-        }
-        profile: {
-          table: "inventory_profile",
-          type: "inner",
-          where: $db.inventory_profile_permission.profile_id == $db.profile.id
-        }
-      }
-      eval = {
-        profile_code: $db.profile.code,
-        permission_code: $db.permission.code
-      }
       sort = {profile_id: "asc", permission_id: "asc"}
       return = {type: "list"}
-    } as $grants
+    } as $grant_rows
+
+    var $grants {
+      value = []
+    }
+
+    foreach ($grant_rows) {
+      each as $grant {
+        db.get inventory_profile {
+          field_name = "id"
+          field_value = $grant.profile_id
+          output = ["code"]
+        } as $grant_profile
+
+        db.get inventory_permission {
+          field_name = "id"
+          field_value = $grant.permission_id
+          output = ["code"]
+        } as $grant_permission
+
+        array.push $grants {
+          value = {
+            profile_id: $grant.profile_id,
+            permission_id: $grant.permission_id,
+            profile_code: $grant_profile.code,
+            permission_code: $grant_permission.code
+          }
+        }
+      }
+    }
   }
 
   response = {
