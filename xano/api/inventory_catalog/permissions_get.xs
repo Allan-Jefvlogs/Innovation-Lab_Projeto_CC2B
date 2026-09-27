@@ -25,17 +25,17 @@ query "permissions" verb=GET {
         permission: {
           table: "inventory_permission",
           type: "inner",
-          where: $db.inventory_profile_permission.permission_id == $db.inventory_permission.id
+          where: $db.inventory_profile_permission.permission_id == $db.permission.id
         }
         profile: {
           table: "inventory_profile",
           type: "inner",
-          where: $db.inventory_profile_permission.profile_id == $db.inventory_profile.id
+          where: $db.inventory_profile_permission.profile_id == $db.profile.id
         }
       }
       eval = {
-        profile_code: $db.inventory_profile.code,
-        permission_code: $db.inventory_permission.code
+        profile_code: $db.profile.code,
+        permission_code: $db.permission.code
       }
       sort = {profile_id: "asc", permission_id: "asc"}
       return = {type: "list"}
