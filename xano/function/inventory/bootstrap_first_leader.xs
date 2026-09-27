@@ -114,7 +114,7 @@ function "Inventory/bootstrap_first_leader" {
           }
           else {
             throw {
-              name = $error.name
+              name = "BOOTSTRAP_TRANSACTION_FAILED"
               value = $error.message
             }
           }
