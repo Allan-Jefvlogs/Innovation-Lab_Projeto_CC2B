@@ -42,7 +42,7 @@ query "categories" verb=POST {
           }
           else {
             throw {
-              name = $error.name
+              name = $error.name|to_text
               value = $error.message
             }
           }
