@@ -22,7 +22,6 @@ query "permissions" verb=GET {
 
     db.direct_query {
       sql = "SELECT ipp.id, ipp.profile_id, ipp.permission_id, profile.code AS profile_code, permission.code AS permission_code FROM inventory_profile_permission AS ipp INNER JOIN inventory_profile AS profile ON profile.id = ipp.profile_id INNER JOIN inventory_permission AS permission ON permission.id = ipp.permission_id ORDER BY ipp.profile_id ASC, ipp.permission_id ASC"
-      arg = []
       response_type = "list"
     } as $grants
   }
