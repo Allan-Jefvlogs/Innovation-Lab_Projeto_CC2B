@@ -20,39 +20,11 @@ query "permissions" verb=GET {
       return = {type: "list"}
     } as $permissions
 
-    db.query inventory_profile_permission {
-      sort = {profile_id: "asc", permission_id: "asc"}
-      return = {type: "list"}
-    } as $grant_rows
-
-    var $grants {
-      value = []
-    }
-
-    foreach ($grant_rows) {
-      each as $grant {
-        db.get inventory_profile {
-          field_name = "id"
-          field_value = $grant.profile_id
-          output = ["code"]
-        } as $grant_profile
-
-        db.get inventory_permission {
-          field_name = "id"
-          field_value = $grant.permission_id
-          output = ["code"]
-        } as $grant_permission
-
-        array.push $grants {
-          value = {
-            profile_id: $grant.profile_id,
-            permission_id: $grant.permission_id,
-            profile_code: $grant_profile.code,
-            permission_code: $grant_permission.code
-          }
-        }
-      }
-    }
+    db.direct_query {
+      sql = "SELECT ipp.id, ipp.profile_id, ipp.permission_id, profile.code AS profile_code, permission.code AS permission_code FROM inventory_profile_permission AS ipp INNER JOIN inventory_profile AS profile ON profile.id = ipp.profile_id INNER JOIN inventory_permission AS permission ON permission.id = ipp.permission_id ORDER BY ipp.profile_id ASC, ipp.permission_id ASC"
+      arg = []
+      response_type = "list"
+    } as $grants
   }
 
   response = {
