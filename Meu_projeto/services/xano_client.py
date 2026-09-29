@@ -1,0 +1,378 @@
+"""Cliente HTTP para comunicação com a API do Xano."""
+
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional
+import httpx
+
+
+# Carrega variáveis do arquivo .env caso exista na raiz do projeto
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+if _env_path.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_env_path)
+    except ImportError:
+        pass
+
+
+DEFAULT_XANO_URL = "https://x8ki-letl-twmt.n7.xano.io"
+AUTH_CANONICAL_GROUP = "api:DipsnlZk"
+INVENTORY_CANONICAL_GROUP = "api:gestao-estoque-cadastros"
+
+_XANO_ERROR_CODES = {
+    "DUPLICATE_VALUE",
+    "BUSINESS_RULE_VIOLATION",
+    "INVALID_INPUT",
+    "INPUT_ERROR",
+    "INPUTERROR",
+    "VALIDATION_ERROR",
+    "NOT_FOUND",
+    "PERMISSION_DENIED",
+    "PROFILE_UNASSIGNED",
+    "PROFILE_INVALID",
+    "PRODUCT_CREATE_FAILED",
+}
+
+
+def _extract_xano_error_code(payload: Any) -> str:
+    """Localiza códigos conhecidos em formatos de erro Xano, inclusive aninhados."""
+    pending = [payload]
+    found = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key in ("code", "name", "error_code", "error", "message", "details", "payload"):
+                value = current.get(key)
+                if isinstance(value, str):
+                    normalized = value.strip().upper()
+                    if normalized in _XANO_ERROR_CODES:
+                        found.add(normalized)
+                elif isinstance(value, (dict, list)):
+                    pending.append(value)
+            pending.extend(
+                value for key, value in current.items()
+                if key not in {"code", "name", "error_code", "error", "message", "details", "payload"}
+                and isinstance(value, (dict, list))
+            )
+        elif isinstance(current, list):
+            pending.extend(current)
+        elif isinstance(current, str):
+            normalized = current.strip().upper()
+            if normalized in _XANO_ERROR_CODES:
+                found.add(normalized)
+    for code in (
+        "DUPLICATE_VALUE",
+        "BUSINESS_RULE_VIOLATION",
+        "PRODUCT_CREATE_FAILED",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "PROFILE_UNASSIGNED",
+        "PROFILE_INVALID",
+        "INVALID_INPUT",
+        "VALIDATION_ERROR",
+        "INPUT_ERROR",
+        "INPUTERROR",
+    ):
+        if code in found:
+            return code
+    return "API_ERROR"
+
+
+class XanoError(Exception):
+    """Exceção base para erros de comunicação com a API do Xano."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None, payload: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.payload = payload or {}
+
+
+class XanoAuthError(XanoError):
+    """Exceção para falhas de autenticação ou credenciais inválidas (HTTP 401/403)."""
+    pass
+
+
+class XanoPermissionError(XanoError):
+    """Exceção para uma operação recusada pelas permissões do usuário."""
+    pass
+
+
+class XanoRequestError(XanoError):
+    """Erro funcional retornado por uma API do Xano."""
+
+    def __init__(self, message: str, error_code: str, status_code: int, payload: Dict[str, Any]):
+        super().__init__(message, status_code=status_code, payload=payload)
+        self.error_code = error_code
+
+
+class XanoConnectionError(XanoError):
+    """Exceção para falhas de conectividade, timeout ou transporte de rede."""
+    pass
+
+
+class XanoServerError(XanoError):
+    """Exceção para erros internos do servidor Xano (HTTP 5xx) ou respostas inesperadas."""
+    pass
+
+
+class XanoAuthClient:
+    """Cliente responsável pelas operações de autenticação e identificação de usuário no Xano."""
+
+    def __init__(self, base_url: Optional[str] = None, timeout: float = 10.0):
+        self.base_url = (base_url or os.getenv("XANO_API_BASE_URL", DEFAULT_XANO_URL)).rstrip("/")
+        self.timeout = timeout
+
+    @property
+    def auth_group_url(self) -> str:
+        """Retorna a URL base do grupo de APIs de Autenticação."""
+        return f"{self.base_url}/{AUTH_CANONICAL_GROUP}"
+
+    @property
+    def inventory_group_url(self) -> str:
+        """Retorna a URL base do grupo de APIs de cadastros do estoque."""
+        return f"{self.base_url}/{INVENTORY_CANONICAL_GROUP}"
+
+    async def _inventory_request(
+        self,
+        method: str,
+        path: str,
+        auth_token: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Executa uma chamada autenticada ao grupo de APIs de cadastros."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.request(
+                    method,
+                    f"{self.inventory_group_url}/{path.lstrip('/')}",
+                    headers={"Authorization": f"Bearer {auth_token}"},
+                    params=params,
+                    json=json_payload,
+                )
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            raise XanoConnectionError(
+                "Não foi possível conectar ao Xano. Verifique sua conexão e tente novamente."
+            ) from exc
+
+        try:
+            data = response.json() if response.content else {}
+        except ValueError as exc:
+            raise XanoServerError(
+                "O Xano retornou uma resposta inválida.", status_code=response.status_code
+            ) from exc
+
+        if response.status_code in (200, 201):
+            if not isinstance(data, dict):
+                raise XanoServerError(
+                    "O Xano retornou uma resposta em formato inesperado.",
+                    status_code=response.status_code,
+                )
+            return data
+
+        payload = data if isinstance(data, dict) else {}
+        if response.status_code == 401:
+            raise XanoAuthError(
+                "Sua sessão expirou. Faça login novamente.",
+                status_code=response.status_code,
+                payload=payload,
+            )
+        if response.status_code == 403:
+            raise XanoPermissionError(
+                "Você não tem permissão para executar esta operação.",
+                status_code=response.status_code,
+                payload=payload,
+            )
+
+        error_code = _extract_xano_error_code(data)
+        friendly_messages = {
+            "INVALID_INPUT": "Confira os campos informados e tente novamente.",
+            "INPUT_ERROR": "Confira os campos obrigatórios e os valores informados.",
+            "INPUTERROR": "Confira os campos obrigatórios e os valores informados.",
+            "VALIDATION_ERROR": "Confira os campos obrigatórios e os valores informados.",
+            "DUPLICATE_VALUE": "Já existe um produto com esse código.",
+            "BUSINESS_RULE_VIOLATION": "A Categoria selecionada não existe ou está inativa. Selecione uma Categoria ativa.",
+            "NOT_FOUND": "O produto solicitado não foi encontrado.",
+            "PERMISSION_DENIED": "Você não tem permissão para executar esta operação.",
+            "PROFILE_UNASSIGNED": "Seu usuário ainda não possui um perfil de estoque atribuído.",
+            "PROFILE_INVALID": "O perfil do usuário não está válido para esta operação.",
+        }
+        message = friendly_messages.get(
+            error_code,
+            f"O Xano não concluiu a operação ({response.status_code}). Tente novamente.",
+        )
+        raise XanoRequestError(message, error_code, response.status_code, payload)
+
+    async def list_products(
+        self, auth_token: str, page: int = 1, per_page: int = 100
+    ) -> Dict[str, Any]:
+        """Consulta a listagem paginada de produtos com a sessão atual."""
+        data = await self._inventory_request(
+            "GET", "/products", auth_token, params={"page": page, "per_page": per_page}
+        )
+        if not isinstance(data.get("items"), list):
+            raise XanoServerError("O Xano retornou uma lista de produtos em formato inesperado.")
+        return data
+
+    async def list_categories(
+        self, auth_token: str, page: int = 1, per_page: int = 100, status: str = "ativo"
+    ) -> Dict[str, Any]:
+        data = await self._inventory_request(
+            "GET",
+            "/categories",
+            auth_token,
+            params={"page": page, "per_page": per_page, "status": status},
+        )
+        if not isinstance(data.get("items"), list):
+            raise XanoServerError("O Xano retornou Categorias em formato inesperado.")
+        return data
+
+    async def create_product(self, auth_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._inventory_request("POST", "/products", auth_token, json_payload=payload)
+
+    async def get_product(self, auth_token: str, product_id: int) -> Dict[str, Any]:
+        return await self._inventory_request(
+            "GET", f"/products/by_id/{product_id}", auth_token
+        )
+
+    async def update_product(
+        self, auth_token: str, product_id: int, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return await self._inventory_request(
+            "PATCH", f"/products/by_id/{product_id}", auth_token, json_payload=payload
+        )
+
+    async def inactivate_product(self, auth_token: str, product_id: int) -> Dict[str, Any]:
+        return await self._inventory_request(
+            "PATCH", f"/products/by_id/{product_id}/inactivate", auth_token
+        )
+
+    async def activate_product(self, auth_token: str, product_id: int) -> Dict[str, Any]:
+        return await self._inventory_request(
+            "PATCH", f"/products/by_id/{product_id}/activate", auth_token
+        )
+
+    async def login(self, email: str, password: str) -> Dict[str, Any]:
+        """Realiza autenticação por e-mail e senha consumindo POST auth/login.
+
+        Args:
+            email: E-mail do usuário.
+            password: Senha em texto claro.
+
+        Returns:
+            Dicionário contendo authToken (str) e user_id (int).
+
+        Raises:
+            XanoAuthError: Se as credenciais forem inválidas (HTTP 401/403).
+            XanoConnectionError: Se houver falha de rede ou timeout.
+            XanoServerError: Se o servidor retornar erro inesperado.
+        """
+        url = f"{self.auth_group_url}/auth/login"
+        payload = {"email": email, "password": password}
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, json=payload)
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            raise XanoConnectionError(
+                "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
+            ) from exc
+
+        if response.status_code == 200:
+            data = response.json()
+            if not isinstance(data, dict) or "authToken" not in data:
+                raise XanoServerError(
+                    "Resposta do servidor inválida: token de autenticação não encontrado.",
+                    status_code=response.status_code,
+                    payload=data if isinstance(data, dict) else {},
+                )
+            return data
+
+        # Tratamento de erro 401 ou 403 (acesso negado / credenciais inválidas)
+        if response.status_code in (401, 403):
+            try:
+                error_payload = response.json()
+            except Exception:
+                error_payload = {}
+            raise XanoAuthError(
+                "E-mail ou senha incorretos.",
+                status_code=response.status_code,
+                payload=error_payload,
+            )
+
+        # Demais erros HTTP (4xx, 5xx)
+        try:
+            error_payload = response.json()
+        except Exception:
+            error_payload = {}
+
+        raise XanoServerError(
+            f"Erro na autenticação ({response.status_code}). Tente novamente mais tarde.",
+            status_code=response.status_code,
+            payload=error_payload,
+        )
+
+    async def get_current_user(self, auth_token: str) -> Dict[str, Any]:
+        """Obtém o registro do usuário autenticado consumindo GET auth/me.
+
+        Args:
+            auth_token: Token JWT de autenticação emitido pelo Xano.
+
+        Returns:
+            Dicionário com os dados do usuário, incluindo id, name, email,
+            role e inventory_profile_id.
+
+        Raises:
+            XanoAuthError: Se o token for inválido ou tiver expirado (HTTP 401/403).
+            XanoConnectionError: Se houver falha de rede ou timeout.
+            XanoServerError: Se o servidor retornar erro inesperado.
+        """
+        url = f"{self.auth_group_url}/auth/me"
+        headers = {"Authorization": f"Bearer {auth_token}"}
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=headers)
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            raise XanoConnectionError(
+                "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
+            ) from exc
+
+        if response.status_code == 200:
+            data = response.json()
+            if not isinstance(data, dict) or "id" not in data:
+                raise XanoServerError(
+                    "Resposta do servidor inválida: dados de usuário não encontrados.",
+                    status_code=response.status_code,
+                    payload=data if isinstance(data, dict) else {},
+                )
+            return data
+
+        if response.status_code in (401, 403):
+            try:
+                error_payload = response.json()
+            except Exception:
+                error_payload = {}
+            raise XanoAuthError(
+                "Sessão expirada ou não autorizada. Faça login novamente.",
+                status_code=response.status_code,
+                payload=error_payload,
+            )
+
+        try:
+            error_payload = response.json()
+        except Exception:
+            error_payload = {}
+
+        raise XanoServerError(
+            f"Erro ao recuperar dados do usuário ({response.status_code}).",
+            status_code=response.status_code,
+            payload=error_payload,
+        )
+
+
+# Instância padrão compartilhada
+auth_client = XanoAuthClient()

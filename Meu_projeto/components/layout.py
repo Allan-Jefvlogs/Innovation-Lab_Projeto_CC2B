@@ -1,7 +1,9 @@
 import reflex as rx
 
+from ..state import AuthState
 
-MENU = [
+
+MENU_LIDER = [
     ("Dashboard", "/dashboard"),
     ("Produtos", "/produtos"),
     ("Categorias", "/categorias"),
@@ -16,6 +18,30 @@ MENU = [
 ]
 
 
+MENU_ALMOXARIFE = [
+    ("Dashboard", "/dashboard"),
+    ("Produtos", "/produtos"),
+    ("Categorias", "/categorias"),
+    ("Fornecedores", "/fornecedores"),
+    ("Estoque", "/estoque"),
+    ("Entradas", "/movimentacoes/entradas"),
+    ("Saídas", "/movimentacoes/saidas"),
+    ("Histórico", "/movimentacoes"),
+    ("Relatórios", "/relatorios"),
+]
+
+
+MENU_AUXILIAR = [
+    ("Dashboard", "/dashboard"),
+    ("Produtos", "/produtos"),
+    ("Categorias", "/categorias"),
+    ("Fornecedores", "/fornecedores"),
+    ("Estoque", "/estoque"),
+    ("Histórico", "/movimentacoes"),
+    ("Relatórios", "/relatorios"),
+]
+
+
 def nav_item(label: str, href: str) -> rx.Component:
     return rx.link(
         label,
@@ -26,21 +52,40 @@ def nav_item(label: str, href: str) -> rx.Component:
         _hover={"background": "#f1f1f1"},
     )
 
+def menu_items(items: list[tuple[str, str]]) -> rx.Component:
+    return rx.vstack(
+        *[nav_item(label, href) for label, href in items],
+        width="100%",
+        align="stretch",
+        spacing="1",
+    )
 
 def sidebar() -> rx.Component:
     return rx.box(
         rx.vstack(
-            rx.heading("Estoque", size="6"),
+            rx.heading("NexStock", size="6"),
             rx.text("Sistema de Gerenciamento", size="2", color="#666"),
             rx.divider(),
-            rx.vstack(
-                *[nav_item(label, href) for label, href in MENU],
-                width="100%",
-                align="stretch",
-                spacing="1",
+
+            rx.match(
+                AuthState.inventory_profile_id,
+                (1, menu_items(MENU_LIDER)),
+                (2, menu_items(MENU_ALMOXARIFE)),
+                (3, menu_items(MENU_AUXILIAR)),
+                menu_items([]),
             ),
+
             rx.spacer(),
-            rx.link("Sair", href="/", width="100%"),
+
+            rx.button(
+                "Sair",
+                on_click=AuthState.logout,
+                width="100%",
+                variant="ghost",
+                color_scheme="gray",
+                cursor="pointer",
+            ),
+
             width="100%",
             height="100%",
             align="stretch",
@@ -63,7 +108,26 @@ def page(title: str, content: rx.Component) -> rx.Component:
                 rx.hstack(
                     rx.heading(title, size="7"),
                     rx.spacer(),
-                    rx.text("Admin • Usuário mock", color="#666"),
+                    rx.hstack(
+                        rx.vstack(
+                            rx.text(
+                                AuthState.user_name,
+                                weight="bold",
+                                size="2",
+                                text_align="right",
+                            ),
+                            rx.text(
+                                AuthState.profile_name,
+                                color="#666",
+                                size="1",
+                                text_align="right",
+                            ),
+                            align="end",
+                            spacing="0",
+                        ),
+                        spacing="2",
+                        align="center",
+                    ),
                     width="100%",
                     align="center",
                 ),
