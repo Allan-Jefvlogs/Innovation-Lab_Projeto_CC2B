@@ -9,6 +9,8 @@ query "products/by_id/{product_id}" verb=PATCH {
     text descricao?
     bool limpar_descricao?
     int categoria_id?
+    int fornecedor_padrao_id?
+    bool limpar_fornecedor_padrao?
     text unidade_medida?
     decimal estoque_minimo? filters=min:0
   }
@@ -29,6 +31,14 @@ query "products/by_id/{product_id}" verb=PATCH {
     }
 
     precondition (!($input.descricao != null && $input.limpar_descricao == true)) {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
+    precondition (!($input.fornecedor_padrao_id != null && $input.limpar_fornecedor_padrao == true)) {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
+    precondition (!($input.limpar_fornecedor_padrao == true && $existing.fornecedor_padrao_id == null)) {
       error_type = "inputerror"
       error = "INVALID_INPUT"
     }
@@ -87,6 +97,31 @@ query "products/by_id/{product_id}" verb=PATCH {
           }
         }
         var.update $updates.categoria_id {value = $input.categoria_id}
+      }
+    }
+
+    conditional {
+      if ($input.fornecedor_padrao_id != null) {
+        conditional {
+          if ($input.fornecedor_padrao_id != $existing.fornecedor_padrao_id) {
+            db.get supplier {
+              field_name = "id"
+              field_value = $input.fornecedor_padrao_id
+            } as $default_supplier
+
+            precondition ($default_supplier != null && $default_supplier.status == "ativo") {
+              error_type = "inputerror"
+              error = "BUSINESS_RULE_VIOLATION"
+            }
+            var.update $updates.fornecedor_padrao_id {value = $input.fornecedor_padrao_id}
+          }
+        }
+      }
+    }
+
+    conditional {
+      if ($input.limpar_fornecedor_padrao == true) {
+        var.update $updates.fornecedor_padrao_id {value = null}
       }
     }
 

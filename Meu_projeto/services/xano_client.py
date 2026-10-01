@@ -19,6 +19,7 @@ if _env_path.exists():
 DEFAULT_XANO_URL = "https://x8ki-letl-twmt.n7.xano.io"
 AUTH_CANONICAL_GROUP = "api:DipsnlZk"
 INVENTORY_CANONICAL_GROUP = "api:gestao-estoque-cadastros"
+STOCK_CANONICAL_GROUP = "api:estoque"
 
 _XANO_ERROR_CODES = {
     "DUPLICATE_VALUE",
@@ -32,6 +33,14 @@ _XANO_ERROR_CODES = {
     "PROFILE_UNASSIGNED",
     "PROFILE_INVALID",
     "PRODUCT_CREATE_FAILED",
+    "PRODUCT_NOT_FOUND",
+    "PRODUCT_INACTIVE",
+    "SUPPLIER_NOT_FOUND",
+    "SUPPLIER_INACTIVE",
+    "STOCK_BALANCE_NOT_FOUND",
+    "INSUFFICIENT_STOCK",
+    "STOCK_UPDATE_FAILED",
+    "STOCK_CONCURRENCY_CONFLICT",
 }
 
 
@@ -69,6 +78,14 @@ def _extract_xano_error_code(payload: Any) -> str:
         "PERMISSION_DENIED",
         "PROFILE_UNASSIGNED",
         "PROFILE_INVALID",
+        "PRODUCT_NOT_FOUND",
+        "PRODUCT_INACTIVE",
+        "SUPPLIER_NOT_FOUND",
+        "SUPPLIER_INACTIVE",
+        "STOCK_BALANCE_NOT_FOUND",
+        "INSUFFICIENT_STOCK",
+        "STOCK_UPDATE_FAILED",
+        "STOCK_CONCURRENCY_CONFLICT",
         "INVALID_INPUT",
         "VALIDATION_ERROR",
         "INPUT_ERROR",
@@ -134,6 +151,11 @@ class XanoAuthClient:
         """Retorna a URL base do grupo de APIs de cadastros do estoque."""
         return f"{self.base_url}/{INVENTORY_CANONICAL_GROUP}"
 
+    @property
+    def stock_group_url(self) -> str:
+        """Retorna a URL base do grupo de consulta de estoque."""
+        return f"{self.base_url}/{STOCK_CANONICAL_GROUP}"
+
     async def _inventory_request(
         self,
         method: str,
@@ -142,13 +164,14 @@ class XanoAuthClient:
         *,
         params: Optional[Dict[str, Any]] = None,
         json_payload: Optional[Dict[str, Any]] = None,
+        group_url: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Executa uma chamada autenticada ao grupo de APIs de cadastros."""
+        """Executa uma chamada autenticada a um grupo de APIs do estoque."""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.request(
                     method,
-                    f"{self.inventory_group_url}/{path.lstrip('/')}",
+                    f"{(group_url or self.inventory_group_url)}/{path.lstrip('/')}",
                     headers={"Authorization": f"Bearer {auth_token}"},
                     params=params,
                     json=json_payload,
@@ -199,6 +222,14 @@ class XanoAuthClient:
             "PERMISSION_DENIED": "Você não tem permissão para executar esta operação.",
             "PROFILE_UNASSIGNED": "Seu usuário ainda não possui um perfil de estoque atribuído.",
             "PROFILE_INVALID": "O perfil do usuário não está válido para esta operação.",
+            "PRODUCT_NOT_FOUND": "Produto não encontrado.",
+            "PRODUCT_INACTIVE": "Não é possível registrar entrada para um produto inativo.",
+            "SUPPLIER_NOT_FOUND": "Fornecedor não encontrado.",
+            "SUPPLIER_INACTIVE": "O fornecedor selecionado está inativo.",
+            "STOCK_BALANCE_NOT_FOUND": "Não foi encontrado saldo de estoque para este produto.",
+            "STOCK_UPDATE_FAILED": "Não foi possível atualizar o estoque. Tente novamente.",
+            "STOCK_CONCURRENCY_CONFLICT": "Houve um conflito ao atualizar o estoque. Tente novamente.",
+            "API_ERROR": "Não foi possível registrar a entrada. Verifique os dados e tente novamente.",
         }
         message = friendly_messages.get(
             error_code,
@@ -218,17 +249,121 @@ class XanoAuthClient:
         return data
 
     async def list_categories(
-        self, auth_token: str, page: int = 1, per_page: int = 100, status: str = "ativo"
+        self, auth_token: str, page: int = 1, per_page: int = 100, status: Optional[str] = None
     ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if status is not None:
+            params["status"] = status
         data = await self._inventory_request(
             "GET",
             "/categories",
             auth_token,
-            params={"page": page, "per_page": per_page, "status": status},
+            params=params,
         )
         if not isinstance(data.get("items"), list):
             raise XanoServerError("O Xano retornou Categorias em formato inesperado.")
         return data
+
+    async def get_category(self, auth_token: str, category_id: int) -> Dict[str, Any]:
+        """Consulta uma Categoria por ID para preservar vínculos existentes no formulário."""
+        return await self._inventory_request(
+            "GET", f"/categories/by_id/{category_id}", auth_token
+        )
+
+    async def list_suppliers(
+        self, auth_token: str, page: int = 1, per_page: int = 100, status: Optional[str] = None
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if status is not None:
+            params["status"] = status
+        data = await self._inventory_request(
+            "GET",
+            "/suppliers",
+            auth_token,
+            params=params,
+        )
+        if not isinstance(data.get("items"), list):
+            raise XanoServerError("O Xano retornou Fornecedores em formato inesperado.")
+        return data
+
+    async def get_supplier(self, auth_token: str, supplier_id: int) -> Dict[str, Any]:
+        return await self._inventory_request(
+            "GET", f"/suppliers/by_id/{supplier_id}", auth_token
+        )
+
+    async def list_stock(
+        self, auth_token: str, page: int = 1, per_page: int = 100
+    ) -> Dict[str, Any]:
+        """Consulta uma página autenticada dos saldos oficiais de estoque."""
+        data = await self._inventory_request(
+            "GET",
+            "/stock",
+            auth_token,
+            params={"page": page, "per_page": per_page},
+            group_url=self.stock_group_url,
+        )
+        if not isinstance(data.get("items"), list):
+            raise XanoServerError("O Xano retornou saldos de estoque em formato inesperado.")
+        return data
+
+    async def create_stock_entry(
+        self,
+        auth_token: str,
+        *,
+        product_id: int,
+        quantidade: float,
+        motivo: str,
+        supplier_id: Optional[int] = None,
+        data_hora: Optional[str] = None,
+        observacao: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Registra uma Entrada no grupo Inventory Stock usando a sessão atual."""
+        payload: Dict[str, Any] = {
+            "product_id": product_id,
+            "quantidade": quantidade,
+            "motivo": motivo.strip(),
+        }
+        if supplier_id is not None and supplier_id > 0:
+            payload["supplier_id"] = supplier_id
+        if data_hora and data_hora.strip():
+            payload["data_hora"] = data_hora.strip()
+        if observacao and observacao.strip():
+            payload["observacao"] = observacao.strip()
+        return await self._inventory_request(
+            "POST",
+            "/entries",
+            auth_token,
+            json_payload=payload,
+            group_url=self.stock_group_url,
+        )
+
+    async def create_stock_exit(
+        self,
+        auth_token: str,
+        *,
+        product_id: int,
+        quantidade: float,
+        motivo: str,
+        data_hora: Optional[str] = None,
+        observacao: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Registra uma Saída autenticada no grupo Inventory Stock."""
+        payload: Dict[str, Any] = {
+            "product_id": product_id,
+            "quantidade": quantidade,
+            "motivo": motivo.strip(),
+        }
+        if data_hora and data_hora.strip():
+            payload["data_hora"] = data_hora.strip()
+        if observacao and observacao.strip():
+            payload["observacao"] = observacao.strip()
+        return await self._inventory_request(
+            "POST",
+            "/exits",
+            auth_token,
+            json_payload=payload,
+            group_url=self.stock_group_url,
+        )
 
     async def create_product(self, auth_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return await self._inventory_request("POST", "/products", auth_token, json_payload=payload)

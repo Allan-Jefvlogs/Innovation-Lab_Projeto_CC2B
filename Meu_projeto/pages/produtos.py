@@ -1,8 +1,10 @@
 import math
+from typing import Any
 
 import reflex as rx
 
 from ..components.layout import page, section
+from ..components.searchable_select import normalize_search_text, searchable_select
 from ..services.xano_client import (
     XanoAuthError,
     XanoConnectionError,
@@ -14,13 +16,91 @@ from ..services.xano_client import (
 )
 from ..state import AuthState
 
+PRODUCT_UNITS = (
+    ("UN", "Unidade"),
+    ("CX", "Caixa"),
+    ("RL", "Rolo"),
+    ("PCT", "Pacote"),
+    ("PAR", "Par"),
+    ("KG", "Quilograma"),
+    ("L", "Litro"),
+    ("MT", "Metro"),
+)
+PRODUCT_UNIT_CODES = tuple(code for code, _label in PRODUCT_UNITS)
+
+
+def _normalize_product_unit(value: object) -> str:
+    normalized = str(value or "").strip().upper()
+    return normalized if normalized in PRODUCT_UNIT_CODES else ""
+
+
+def _map_product_to_list_item(
+    item: dict[str, Any],
+    category_names: dict[str, str],
+    stock_by_product: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    product_id = str(item.get("id", ""))
+    stock = stock_by_product.get(product_id)
+    stock_quantity = stock.get("quantidade_disponivel") if stock else None
+    stock_minimum = stock.get("estoque_minimo") if stock else None
+    if stock_minimum is None:
+        stock_minimum = item.get("estoque_minimo")
+
+    situation_labels = {
+        "sem_estoque": "Sem estoque",
+        "abaixo_minimo": "Abaixo do mínimo",
+        "normal": "Normal",
+    }
+    if stock is None:
+        stock_situation = "Saldo não encontrado"
+    else:
+        stock_situation = situation_labels.get(
+            str(stock.get("situacao_estoque") or ""), "Situação desconhecida"
+        )
+
+    category_id = item.get("categoria_id")
+    if category_id is None:
+        category_name = "Sem categoria"
+    else:
+        category_name = category_names.get(
+            str(category_id), "Categoria não encontrada"
+        )
+
+    return {
+        "id": product_id,
+        "codigo": str(item.get("codigo") or "—"),
+        "nome": str(item.get("nome") or "—"),
+        "categoria": category_name,
+        "unidade_medida": _normalize_product_unit(item.get("unidade_medida"))
+        or str(item.get("unidade_medida") or "—"),
+        "quantidade_disponivel": (
+            str(stock_quantity) if stock_quantity is not None else "—"
+        ),
+        "estoque_minimo": str(stock_minimum) if stock_minimum is not None else "—",
+        "status": str(item.get("status") or "—"),
+        "situacao_estoque": stock_situation,
+    }
+
 
 class ProductsState(rx.State):
     """Estado da listagem e dos formulários reais de Produto."""
 
     products: list[dict[str, str]] = []
-    category_options: list[str] = []
+    search_query: str = ""
+    category_options: list[dict[str, str]] = []
     category_selection: str = ""
+    category_search_query: str = ""
+    category_dropdown_open: bool = False
+    category_page: int = 1
+    category_has_more: bool = False
+    category_loading_more: bool = False
+    supplier_options: list[dict[str, str]] = []
+    supplier_selection: str = "none"
+    supplier_search_query: str = "Sem fornecedor padrão"
+    supplier_dropdown_open: bool = False
+    supplier_page: int = 1
+    supplier_has_more: bool = False
+    supplier_loading_more: bool = False
     codigo: str = ""
     nome: str = ""
     descricao: str = ""
@@ -38,7 +118,43 @@ class ProductsState(rx.State):
     has_products: bool = False
     error_message: str = ""
     category_error_message: str = ""
+    supplier_error_message: str = ""
     success_message: str = ""
+
+    @rx.var
+    def filtered_products(self) -> list[dict[str, str]]:
+        query = normalize_search_text(self.search_query)
+        if not query:
+            return self.products
+        searchable_fields = ("codigo", "nome", "categoria")
+        return [
+            product
+            for product in self.products
+            if any(
+                query in normalize_search_text(product.get(field, ""))
+                for field in searchable_fields
+            )
+        ]
+
+    @rx.var
+    def has_filtered_products(self) -> bool:
+        return bool(self.filtered_products)
+
+    @rx.var
+    def filtered_category_options(self) -> list[dict[str, str]]:
+        query = normalize_search_text(self.category_search_query)
+        return [
+            option for option in self.category_options
+            if not query or query in normalize_search_text(option.get("label", ""))
+        ]
+
+    @rx.var
+    def filtered_supplier_options(self) -> list[dict[str, str]]:
+        query = normalize_search_text(self.supplier_search_query)
+        return [
+            option for option in self.supplier_options
+            if not query or query in normalize_search_text(option.get("label", ""))
+        ]
 
     @rx.var
     def status_action_label(self) -> str:
@@ -57,6 +173,9 @@ class ProductsState(rx.State):
     def load_edit_page(self):
         return [AuthState.require_auth(), ProductsState.load_edit_form()]
 
+    def change_search_query(self, value: str):
+        self.search_query = value
+
     def change_codigo(self, value: str):
         self.codigo = value
 
@@ -66,11 +185,56 @@ class ProductsState(rx.State):
     def change_descricao(self, value: str):
         self.descricao = value
 
-    def change_category(self, value: str):
-        self.category_selection = value
+    def search_categories(self, value: str):
+        self.category_search_query = value
+        self.category_selection = ""
+        self.category_dropdown_open = True
+        self.supplier_dropdown_open = False
+
+    def search_suppliers(self, value: str):
+        self.supplier_search_query = value
+        self.supplier_selection = ""
+        self.supplier_dropdown_open = True
+        self.category_dropdown_open = False
+
+    def open_category_options(self):
+        self.category_dropdown_open = True
+        self.supplier_dropdown_open = False
+
+    def close_category_options(self, value: str = ""):
+        self.category_dropdown_open = False
+
+    def close_category_options_on_escape(self, key: str, modifiers: dict | None = None):
+        if key == "Escape":
+            self.category_dropdown_open = False
+
+    def open_supplier_options(self):
+        self.supplier_dropdown_open = True
+        self.category_dropdown_open = False
+
+    def close_supplier_options(self, value: str = ""):
+        self.supplier_dropdown_open = False
+
+    def close_supplier_options_on_escape(self, key: str, modifiers: dict | None = None):
+        if key == "Escape":
+            self.supplier_dropdown_open = False
+
+    def select_category(self, category_id: str):
+        option = next((item for item in self.category_options if item["id"] == category_id), None)
+        if option and option.get("disabled") != "true":
+            self.category_selection = category_id
+            self.category_search_query = option["label"]
+            self.category_dropdown_open = False
+
+    def select_supplier(self, supplier_id: str):
+        option = next((item for item in self.supplier_options if item["id"] == supplier_id), None)
+        if option and option.get("disabled") != "true":
+            self.supplier_selection = supplier_id
+            self.supplier_search_query = option["label"]
+            self.supplier_dropdown_open = False
 
     def change_unidade_medida(self, value: str):
-        self.unidade_medida = value
+        self.unidade_medida = _normalize_product_unit(value)
 
     def change_estoque_minimo(self, value: str):
         self.estoque_minimo = value
@@ -106,19 +270,118 @@ class ProductsState(rx.State):
         token = str(auth_state.auth_token or "").strip()
         return token, auth_state.inventory_profile_id, auth_state.is_authenticated
 
+    @staticmethod
+    def _category_option(item: dict[str, Any], *, disabled: bool = False) -> dict[str, str]:
+        category_id = str(item.get("id", ""))
+        label = str(item.get("nome") or f"Categoria (ID {category_id})")
+        if disabled:
+            label = f"{label} (inativa — vínculo atual)"
+        return {"id": category_id, "label": label, "disabled": "true" if disabled else "false"}
+
+    @staticmethod
+    def _supplier_option(item: dict[str, Any], *, disabled: bool = False) -> dict[str, str]:
+        supplier_id = str(item.get("id", ""))
+        label = str(item.get("nome_razao_social") or f"Fornecedor (ID {supplier_id})")
+        if disabled:
+            label = f"{label} (inativo — vínculo atual)"
+        return {"id": supplier_id, "label": label, "disabled": "true" if disabled else "false"}
+
     async def _load_categories(self, token: str, current_category_id: int | None = None):
         response = await auth_client.list_categories(token, page=1, per_page=100, status="ativo")
-        options = [
-            f"{item['id']} · {item['nome']}"
-            for item in response["items"]
-            if isinstance(item, dict) and item.get("id") is not None and item.get("nome")
-        ]
+        items = [item for item in response["items"] if isinstance(item, dict) and item.get("id") is not None]
+        self.category_options = [self._category_option(item) for item in items]
+        self.category_page = 1
+        self.category_has_more = len(response["items"]) == 100
         if current_category_id is not None and not any(
-            option.split(" · ", 1)[0] == str(current_category_id) for option in options
+            option["id"] == str(current_category_id) for option in self.category_options
         ):
-            options.append(f"{current_category_id} · Categoria atual (inativa ou não listada)")
-        self.category_options = options
-        return options
+            try:
+                current = await auth_client.get_category(token, current_category_id)
+                self.category_options.append(
+                    self._category_option(current, disabled=current.get("status") != "ativo")
+                )
+            except XanoRequestError as exc:
+                if exc.error_code != "NOT_FOUND":
+                    raise
+                self.category_options.append({
+                    "id": str(current_category_id),
+                    "label": f"Categoria atual indisponível (ID {current_category_id})",
+                    "disabled": "true",
+                })
+        return self.category_options
+
+    async def _load_suppliers(self, token: str, current_supplier_id: int | None = None):
+        response = await auth_client.list_suppliers(token, page=1, per_page=100, status="ativo")
+        items = [item for item in response["items"] if isinstance(item, dict) and item.get("id") is not None]
+        self.supplier_options = [
+            {"id": "none", "label": "Sem fornecedor padrão", "disabled": "false"},
+            *(self._supplier_option(item) for item in items),
+        ]
+        self.supplier_page = 1
+        self.supplier_has_more = len(response["items"]) == 100
+        if current_supplier_id is not None and not any(
+            option["id"] == str(current_supplier_id) for option in self.supplier_options
+        ):
+            try:
+                current = await auth_client.get_supplier(token, current_supplier_id)
+                self.supplier_options.append(
+                    self._supplier_option(current, disabled=current.get("status") != "ativo")
+                )
+            except XanoRequestError as exc:
+                if exc.error_code != "NOT_FOUND":
+                    raise
+                self.supplier_options.append({
+                    "id": str(current_supplier_id),
+                    "label": f"Fornecedor atual indisponível (ID {current_supplier_id})",
+                    "disabled": "true",
+                })
+        return self.supplier_options
+
+    async def load_more_categories(self):
+        if self.category_loading_more or not self.category_has_more:
+            return
+        token, _, authenticated = await self._session()
+        if not token or not authenticated:
+            return
+        self.category_loading_more = True
+        try:
+            page = self.category_page + 1
+            response = await auth_client.list_categories(token, page=page, per_page=100, status="ativo")
+            known = {option["id"] for option in self.category_options}
+            new_items = [
+                self._category_option(item) for item in response["items"]
+                if isinstance(item, dict) and item.get("id") is not None and str(item["id"]) not in known
+            ]
+            self.category_options.extend(new_items)
+            self.category_page = page
+            self.category_has_more = len(response["items"]) == 100
+        except XanoError as exc:
+            self.category_error_message = exc.message
+        finally:
+            self.category_loading_more = False
+
+    async def load_more_suppliers(self):
+        if self.supplier_loading_more or not self.supplier_has_more:
+            return
+        token, _, authenticated = await self._session()
+        if not token or not authenticated:
+            return
+        self.supplier_loading_more = True
+        try:
+            page = self.supplier_page + 1
+            response = await auth_client.list_suppliers(token, page=page, per_page=100, status="ativo")
+            known = {option["id"] for option in self.supplier_options}
+            new_items = [
+                self._supplier_option(item) for item in response["items"]
+                if isinstance(item, dict) and item.get("id") is not None and str(item["id"]) not in known
+            ]
+            self.supplier_options.extend(new_items)
+            self.supplier_page = page
+            self.supplier_has_more = len(response["items"]) == 100
+        except XanoError as exc:
+            self.supplier_error_message = exc.message
+        finally:
+            self.supplier_loading_more = False
 
     async def load_products(self):
         self.is_loading = True
@@ -134,21 +397,52 @@ class ProductsState(rx.State):
         self.can_manage_products = profile_id in (1, 2)
         try:
             response = await auth_client.list_products(token, page=1, per_page=100)
+            categories = []
+            category_page = 1
+            while True:
+                categories_response = await auth_client.list_categories(
+                    token, page=category_page, per_page=100
+                )
+                category_items = categories_response["items"]
+                categories.extend(category_items)
+                if len(category_items) < 100:
+                    break
+                category_page += 1
+
+            stock_items = []
+            stock_page = 1
+            while True:
+                stock_response = await auth_client.list_stock(
+                    token, page=stock_page, per_page=100
+                )
+                page_items = stock_response["items"]
+                stock_items.extend(page_items)
+                if len(page_items) < 100:
+                    break
+                stock_page += 1
+
+            category_names = {
+                str(category["id"]): str(category["nome"])
+                for category in categories
+                if isinstance(category, dict)
+                and category.get("id") is not None
+                and category.get("nome")
+            }
+            stock_by_product = {
+                str(stock["product_id"]): stock
+                for stock in stock_items
+                if isinstance(stock, dict) and stock.get("product_id") is not None
+            }
             self.products = [
-                {
-                    "id": str(item.get("id", "")),
-                    "codigo": str(item.get("codigo") or "—"),
-                    "nome": str(item.get("nome") or "—"),
-                    "categoria_id": str(item.get("categoria_id") or ""),
-                    "unidade_medida": str(item.get("unidade_medida") or "—"),
-                    "estoque_minimo": str(item.get("estoque_minimo") if item.get("estoque_minimo") is not None else "—"),
-                    "status": str(item.get("status") or "—"),
-                }
+                _map_product_to_list_item(item, category_names, stock_by_product)
                 for item in response["items"]
                 if isinstance(item, dict)
             ]
             self.has_products = bool(self.products)
-        except (XanoAuthError, XanoPermissionError, XanoConnectionError, XanoServerError, XanoRequestError) as exc:
+        except XanoAuthError as exc:
+            self.error_message = exc.message
+            yield rx.redirect("/")
+        except (XanoPermissionError, XanoConnectionError, XanoServerError, XanoRequestError) as exc:
             self.error_message = exc.message
         except Exception:
             self.error_message = "Não foi possível carregar os produtos. Tente novamente."
@@ -159,6 +453,7 @@ class ProductsState(rx.State):
         self.is_loading = True
         self.error_message = ""
         self.category_error_message = ""
+        self.supplier_error_message = ""
         self.success_message = ""
         self.can_manage_products = False
         yield
@@ -172,10 +467,22 @@ class ProductsState(rx.State):
             await self._load_categories(token)
         except (XanoError, XanoRequestError) as exc:
             self.category_error_message = exc.message
+        try:
+            await self._load_suppliers(token)
+        except (XanoError, XanoRequestError) as exc:
+            self.supplier_options = [
+                {"id": "none", "label": "Sem fornecedor padrão", "disabled": "false"}
+            ]
+            self.supplier_error_message = exc.message
         self.codigo = ""
         self.nome = ""
         self.descricao = ""
         self.category_selection = ""
+        self.category_search_query = ""
+        self.category_dropdown_open = False
+        self.supplier_selection = "none"
+        self.supplier_search_query = "Sem fornecedor padrão"
+        self.supplier_dropdown_open = False
         self.unidade_medida = ""
         self.estoque_minimo = ""
         self.is_loading = False
@@ -192,17 +499,27 @@ class ProductsState(rx.State):
             return
         category_id = _selected_category_id(self.category_selection)
         minimum = _parse_minimum(self.estoque_minimo)
-        if not self.codigo.strip() or not self.nome.strip() or category_id is None or not self.unidade_medida.strip() or minimum is None:
+        if not self.codigo.strip() or not self.nome.strip() or category_id is None or self.unidade_medida not in PRODUCT_UNIT_CODES or minimum is None:
             self.error_message = "Preencha código, nome, categoria, unidade de medida e estoque mínimo válido (maior ou igual a zero)."
+            return
+        active_supplier_ids = {
+            option["id"]
+            for option in self.supplier_options
+            if option.get("id") != "none" and option.get("disabled") == "false"
+        }
+        if self.supplier_selection != "none" and self.supplier_selection not in active_supplier_ids:
+            self.error_message = "Selecione um fornecedor ativo ou Sem fornecedor padrão."
             return
 
         payload = {
             "codigo": self.codigo,
             "nome": self.nome,
             "categoria_id": category_id,
-            "unidade_medida": self.unidade_medida,
+            "unidade_medida": _normalize_product_unit(self.unidade_medida),
             "estoque_minimo": minimum,
         }
+        if self.supplier_selection != "none":
+            payload["fornecedor_padrao_id"] = int(self.supplier_selection)
         if self.descricao:
             payload["descricao"] = self.descricao
 
@@ -218,7 +535,8 @@ class ProductsState(rx.State):
                 )
             elif exc.error_code == "BUSINESS_RULE_VIOLATION":
                 self.error_message = (
-                    "A Categoria selecionada não existe ou está inativa. Selecione uma Categoria ativa."
+                    "A Categoria ou o Fornecedor padrão selecionado não existe ou está inativo. "
+                    "Revise as associações e selecione registros ativos."
                 )
             elif exc.error_code in {
                 "INVALID_INPUT", "INPUT_ERROR", "INPUTERROR", "VALIDATION_ERROR"
@@ -243,6 +561,7 @@ class ProductsState(rx.State):
         self.has_loaded_product = False
         self.error_message = ""
         self.category_error_message = ""
+        self.supplier_error_message = ""
         self.success_message = ""
         self.original_product = {}
         yield
@@ -271,8 +590,15 @@ class ProductsState(rx.State):
             self.codigo = str(product.get("codigo") or "")
             self.nome = str(product.get("nome") or "")
             self.descricao = str(product.get("descricao") or "")
-            self.unidade_medida = str(product.get("unidade_medida") or "")
+            self.unidade_medida = _normalize_product_unit(product.get("unidade_medida"))
             self.estoque_minimo = str(product.get("estoque_minimo") if product.get("estoque_minimo") is not None else "")
+            current_supplier_value = product.get("fornecedor_padrao_id")
+            current_supplier_id = (
+                int(current_supplier_value) if current_supplier_value is not None else None
+            )
+            self.supplier_selection = (
+                str(current_supplier_id) if current_supplier_id is not None else "none"
+            )
             self.original_product_status = str(product.get("status") or "")
             self.current_product_status = self.original_product_status
             current_category_id = int(product["categoria_id"])
@@ -281,11 +607,43 @@ class ProductsState(rx.State):
                 await self._load_categories(token, current_category_id)
             except (XanoError, XanoRequestError) as exc:
                 self.category_error_message = exc.message
-                self.category_options = [f"{current_category_id} · Categoria atual"]
-            self.category_selection = next(
-                (option for option in self.category_options if option.split(" · ", 1)[0] == str(current_category_id)),
-                f"{current_category_id} · Categoria atual",
+                self.category_options = [{
+                    "id": str(current_category_id),
+                    "label": f"Categoria atual (ID {current_category_id})",
+                    "disabled": "true",
+                }]
+                self.category_has_more = False
+            try:
+                await self._load_suppliers(token, current_supplier_id)
+            except (XanoError, XanoRequestError) as exc:
+                self.supplier_error_message = exc.message
+                self.supplier_options = [
+                    {"id": "none", "label": "Sem fornecedor padrão", "disabled": "false"}
+                ]
+                if current_supplier_id is not None:
+                    self.supplier_options.append({
+                        "id": str(current_supplier_id),
+                        "label": f"Fornecedor atual (ID {current_supplier_id})",
+                        "disabled": "true",
+                    })
+                self.supplier_has_more = False
+            current_category = next(
+                (option for option in self.category_options if option["id"] == str(current_category_id)),
+                None,
             )
+            self.category_selection = str(current_category_id)
+            self.category_search_query = (
+                current_category["label"] if current_category else f"Categoria atual (ID {current_category_id})"
+            )
+            current_supplier = next(
+                (option for option in self.supplier_options if option["id"] == str(current_supplier_id)),
+                None,
+            ) if current_supplier_id is not None else None
+            self.supplier_search_query = (
+                current_supplier["label"] if current_supplier else "Sem fornecedor padrão"
+            )
+            self.category_dropdown_open = False
+            self.supplier_dropdown_open = False
         except (XanoError, XanoRequestError) as exc:
             self.error_message = exc.message
         except (KeyError, TypeError, ValueError):
@@ -307,7 +665,7 @@ class ProductsState(rx.State):
             return
         category_id = _selected_category_id(self.category_selection)
         minimum = _parse_minimum(self.estoque_minimo)
-        if not self.codigo.strip() or not self.nome.strip() or category_id is None or not self.unidade_medida.strip() or minimum is None:
+        if not self.codigo.strip() or not self.nome.strip() or category_id is None or self.unidade_medida not in PRODUCT_UNIT_CODES or minimum is None:
             self.error_message = "Preencha código, nome, categoria, unidade de medida e estoque mínimo válido."
             return
 
@@ -317,11 +675,26 @@ class ProductsState(rx.State):
             ("codigo", self.codigo),
             ("nome", self.nome),
             ("categoria_id", category_id),
-            ("unidade_medida", self.unidade_medida),
+            ("unidade_medida", _normalize_product_unit(self.unidade_medida)),
             ("estoque_minimo", minimum),
         ):
             if str(original.get(field, "")) != str(value):
                 payload[field] = value
+
+        original_supplier_id = str(original.get("fornecedor_padrao_id", "") or "")
+        if self.supplier_selection == "none":
+            if original_supplier_id:
+                payload["limpar_fornecedor_padrao"] = True
+        elif self.supplier_selection != original_supplier_id:
+            active_supplier_ids = {
+                option["id"]
+                for option in self.supplier_options
+                if option.get("id") != "none" and option.get("disabled") == "false"
+            }
+            if self.supplier_selection not in active_supplier_ids:
+                self.error_message = "Selecione um fornecedor ativo ou Sem fornecedor padrão."
+                return
+            payload["fornecedor_padrao_id"] = int(self.supplier_selection)
         try:
             if float(original.get("estoque_minimo", "")) == minimum:
                 payload.pop("estoque_minimo", None)
@@ -405,20 +778,49 @@ def _parse_minimum(value: str) -> float | None:
 
 
 def _product_row(product: dict[str, str]) -> rx.Component:
-    category_id = product["categoria_id"]
-    category_text = rx.cond(category_id != "", f"ID {category_id}", "—")
     return rx.hstack(
         rx.text(product["codigo"], flex="1", min_width="120px"),
-        rx.text(product["nome"], flex="1", min_width="120px"),
-        rx.text(category_text, flex="1", min_width="120px"),
+        rx.text(product["nome"], flex="1.5", min_width="180px"),
+        rx.text(product["categoria"], flex="1.5", min_width="180px"),
         rx.text(product["unidade_medida"], flex="1", min_width="120px"),
-        rx.text("—", flex="1", min_width="120px"),
-        rx.text(product["estoque_minimo"], flex="1", min_width="120px"),
-        rx.text(product["status"], flex="1", min_width="120px"),
-        rx.cond(
-            ProductsState.can_manage_products,
-            rx.link("Editar", href=f"/produtos/{product['id']}/editar"),
-            rx.text("—"),
+        rx.text(
+            product["quantidade_disponivel"],
+            width="88px",
+            min_width="88px",
+            flex_shrink="0",
+            text_align="center",
+        ),
+        rx.text(
+            product["estoque_minimo"],
+            width="100px",
+            min_width="100px",
+            flex_shrink="0",
+            text_align="center",
+        ),
+        rx.text(
+            product["status"],
+            width="100px",
+            min_width="100px",
+            flex_shrink="0",
+            text_align="center",
+        ),
+        rx.text(
+            product["situacao_estoque"],
+            width="190px",
+            min_width="190px",
+            flex_shrink="0",
+            text_align="center",
+            white_space="nowrap",
+        ),
+        rx.center(
+            rx.cond(
+                ProductsState.can_manage_products,
+                rx.link("Editar", href=f"/produtos/{product['id']}/editar"),
+                rx.text("—"),
+            ),
+            width="96px",
+            min_width="96px",
+            flex_shrink="0",
         ),
         width="100%",
         padding="0.75rem",
@@ -427,9 +829,53 @@ def _product_row(product: dict[str, str]) -> rx.Component:
 
 
 def _products_table() -> rx.Component:
-    headers = ["Código", "Nome", "Categoria ID", "Unidade", "Qtd.", "Mínimo", "Status", "Ações"]
+    headers = ["Código", "Nome", "Categoria", "Unidade", "Qtd.", "Mínimo", "Status", "Situação do estoque", "Ações"]
     header = rx.hstack(
-        *[rx.text(label, weight="bold", flex="1", min_width="120px") for label in headers],
+        rx.text(headers[0], weight="bold", flex="1", min_width="120px"),
+        rx.text(headers[1], weight="bold", flex="1.5", min_width="180px"),
+        rx.text(headers[2], weight="bold", flex="1.5", min_width="180px"),
+        rx.text(headers[3], weight="bold", flex="1", min_width="120px"),
+        rx.text(
+            headers[4],
+            weight="bold",
+            width="88px",
+            min_width="88px",
+            flex_shrink="0",
+            text_align="center",
+        ),
+        rx.text(
+            headers[5],
+            weight="bold",
+            width="100px",
+            min_width="100px",
+            flex_shrink="0",
+            text_align="center",
+        ),
+        rx.text(
+            headers[6],
+            weight="bold",
+            width="100px",
+            min_width="100px",
+            flex_shrink="0",
+            text_align="center",
+        ),
+        rx.text(
+            headers[7],
+            weight="bold",
+            width="190px",
+            min_width="190px",
+            flex_shrink="0",
+            text_align="center",
+            white_space="nowrap",
+        ),
+        rx.text(
+            headers[8],
+            weight="bold",
+            width="96px",
+            min_width="96px",
+            flex_shrink="0",
+            text_align="center",
+        ),
         width="100%",
         padding="0.75rem",
         background="#f5f5f5",
@@ -437,7 +883,7 @@ def _products_table() -> rx.Component:
     )
     return rx.box(
         header,
-        rx.vstack(rx.foreach(ProductsState.products, _product_row), width="100%", spacing="0"),
+        rx.vstack(rx.foreach(ProductsState.filtered_products, _product_row), width="100%", spacing="0"),
         width="100%",
         overflow_x="auto",
         border="1px solid #ddd",
@@ -450,8 +896,61 @@ def _form_fields() -> rx.Component:
         rx.vstack(rx.text("Código"), rx.input(value=ProductsState.codigo, on_change=ProductsState.change_codigo, placeholder="Código"), width="100%", align="stretch", spacing="1"),
         rx.vstack(rx.text("Nome"), rx.input(value=ProductsState.nome, on_change=ProductsState.change_nome, placeholder="Nome"), width="100%", align="stretch", spacing="1"),
         rx.vstack(rx.text("Descrição"), rx.text_area(value=ProductsState.descricao, on_change=ProductsState.change_descricao, placeholder="Descrição (opcional)"), width="100%", align="stretch", spacing="1"),
-        rx.vstack(rx.text("Categoria"), rx.select(ProductsState.category_options, value=ProductsState.category_selection, on_change=ProductsState.change_category, placeholder="Selecione uma Categoria"), width="100%", align="stretch", spacing="1"),
-        rx.vstack(rx.text("Unidade de medida"), rx.input(value=ProductsState.unidade_medida, on_change=ProductsState.change_unidade_medida, placeholder="Ex.: UN, KG, L"), width="100%", align="stretch", spacing="1"),
+        rx.vstack(
+            rx.text("Categoria"),
+            searchable_select(
+                query=ProductsState.category_search_query,
+                options=ProductsState.filtered_category_options,
+                is_open=ProductsState.category_dropdown_open,
+                on_search=ProductsState.search_categories,
+                on_open=ProductsState.open_category_options,
+                on_close=ProductsState.close_category_options,
+                on_escape=ProductsState.close_category_options_on_escape,
+                on_select=ProductsState.select_category,
+                has_more=ProductsState.category_has_more,
+                is_loading_more=ProductsState.category_loading_more,
+                on_load_more=ProductsState.load_more_categories,
+                placeholder="Buscar categoria...",
+            ),
+            width="100%", align="stretch", spacing="1",
+        ),
+        rx.vstack(
+            rx.text("Fornecedor padrão"),
+            searchable_select(
+                query=ProductsState.supplier_search_query,
+                options=ProductsState.filtered_supplier_options,
+                is_open=ProductsState.supplier_dropdown_open,
+                on_search=ProductsState.search_suppliers,
+                on_open=ProductsState.open_supplier_options,
+                on_close=ProductsState.close_supplier_options,
+                on_escape=ProductsState.close_supplier_options_on_escape,
+                on_select=ProductsState.select_supplier,
+                has_more=ProductsState.supplier_has_more,
+                is_loading_more=ProductsState.supplier_loading_more,
+                on_load_more=ProductsState.load_more_suppliers,
+                placeholder="Buscar fornecedor...",
+            ),
+            width="100%", align="stretch", spacing="1",
+        ),
+        rx.vstack(
+            rx.text("Unidade de medida"),
+            rx.select.root(
+                rx.select.trigger(placeholder="Selecione uma unidade"),
+                rx.select.content(
+                    rx.select.group(
+                        *[
+                            rx.select.item(f"{code} - {label}", value=code)
+                            for code, label in PRODUCT_UNITS
+                        ]
+                    )
+                ),
+                value=ProductsState.unidade_medida,
+                on_change=ProductsState.change_unidade_medida,
+            ),
+            width="100%",
+            align="stretch",
+            spacing="1",
+        ),
         rx.vstack(rx.text("Estoque mínimo"), rx.input(value=ProductsState.estoque_minimo, on_change=ProductsState.change_estoque_minimo, placeholder="0", type="number", step="0.01"), width="100%", align="stretch", spacing="1"),
         width="100%",
         align="stretch",
@@ -463,6 +962,7 @@ def _feedback() -> rx.Component:
     return rx.vstack(
         rx.cond(ProductsState.error_message != "", rx.text(ProductsState.error_message, color="#b91c1c")),
         rx.cond(ProductsState.category_error_message != "", rx.text(ProductsState.category_error_message, color="#b91c1c")),
+        rx.cond(ProductsState.supplier_error_message != "", rx.text(ProductsState.supplier_error_message, color="#b91c1c")),
         rx.cond(ProductsState.success_message != "", rx.text(ProductsState.success_message, color="#15803d")),
         width="100%",
         align="stretch",
@@ -475,8 +975,30 @@ def produtos() -> rx.Component:
         "Produtos",
         rx.vstack(
             rx.hstack(
-                rx.input(placeholder="Buscar por código ou nome...", width="350px"),
-                rx.button("Buscar"),
+                rx.hstack(
+                    rx.icon(tag="search", size=18, color="#64748B"),
+                    rx.input(
+                        value=ProductsState.search_query,
+                        on_change=ProductsState.change_search_query,
+                        placeholder="Buscar por código, nome ou categoria...",
+                        width="100%",
+                        border="none",
+                        outline="none",
+                        box_shadow="none",
+                        padding="0",
+                        background="transparent",
+                    ),
+                    align="center",
+                    spacing="3",
+                    width="430px",
+                    max_width="100%",
+                    flex_shrink="1",
+                    height="40px",
+                    padding_x="12px",
+                    border="1px solid #CBD5E1",
+                    border_radius="8px",
+                    background="white",
+                ),
                 rx.spacer(),
                 rx.cond(ProductsState.can_manage_products, rx.link(rx.button("Novo produto"), href="/produtos/novo"), rx.text("")),
                 width="100%",
@@ -491,12 +1013,15 @@ def produtos() -> rx.Component:
                         _feedback(),
                         rx.cond(
                             ProductsState.has_products,
-                            rx.vstack(
-                                _products_table(),
-                                rx.text("A API não informa a quantidade atual em estoque nem o nome da Categoria.", color="#64748b", size="2"),
-                                width="100%",
-                                align="stretch",
-                                spacing="2",
+                            rx.cond(
+                                ProductsState.has_filtered_products,
+                                rx.vstack(
+                                    _products_table(),
+                                    width="100%",
+                                    align="stretch",
+                                    spacing="2",
+                                ),
+                                rx.text("Nenhum produto encontrado."),
                             ),
                             rx.text("Nenhum produto cadastrado."),
                         ),

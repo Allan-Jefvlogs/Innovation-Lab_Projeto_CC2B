@@ -2,6 +2,46 @@
 
 ## ADDED Requirements
 
+### Requirement: Selecionar Fornecedor padrão opcional no Produto
+
+Os formulários de criação e edição MUST exibir o mesmo select de Fornecedor padrão, sem texto livre, carregado de `GET /suppliers` com filtro de ativos e paginação. O select MUST permitir `Sem fornecedor padrão` e enviar o ID numérico, nunca o nome. Ao editar, uma referência atual inativa MUST permanecer visível como opção atual desabilitada, sem ser removida automaticamente; o usuário poderá mantê-la, limpá-la ou selecionar um Fornecedor ativo. A autorização e validação definitiva MUST permanecer no Xano.
+
+#### Scenario: Carregar opções de Fornecedor
+- **WHEN** usuário autorizado abre criação ou edição de Produto
+- **THEN** Reflex carrega Fornecedores ativos paginados e permite selecionar nenhum ou um Fornecedor ativo
+
+#### Scenario: Preservar vínculo atual inativo
+- **WHEN** Produto existente aponta para Fornecedor inativo
+- **THEN** edição carrega e mostra o vínculo atual sem quebrar, sem permitir nova seleção desse Fornecedor e sem limpá-lo automaticamente
+
+#### Scenario: Enviar ou limpar Fornecedor padrão
+- **WHEN** usuário seleciona Fornecedor ativo, mantém a seleção sem alteração ou escolhe `Sem fornecedor padrão`
+- **THEN** Reflex envia o ID numérico, omite campo inalterado ou envia `limpar_fornecedor_padrao=true`, respectivamente
+
+### Requirement: Busca local na listagem de Produtos
+
+Quando os Produtos estiverem carregados, o campo de busca MUST filtrar em memória por substring case-insensitive e accent-insensitive nos campos `codigo`, `nome` e nome da Categoria. A normalização para comparação MUST remover acentos sem alterar os valores exibidos. A busca MUST atualizar conforme o usuário digita e MUST NOT fazer chamadas adicionais ao Xano por tecla. Com a busca vazia, a listagem MUST mostrar todos os Produtos carregados. Se não houver Produtos no Xano, Reflex MUST mostrar `Nenhum produto cadastrado.`; se houver Produtos, mas nenhum corresponder à busca, MUST mostrar `Nenhum produto encontrado.`.
+
+#### Scenario: Filtrar sem diferenciar caixa ou acentos
+- **WHEN** usuário digita um trecho em qualquer combinação de maiúsculas/minúsculas e sem acentos
+- **THEN** a tabela mostra os Produtos cujo código, nome ou nome da Categoria contém o trecho após normalização, sem alterar os valores exibidos nem fazer uma nova chamada HTTP
+
+#### Scenario: Busca vazia ou sem correspondência
+- **WHEN** a busca está vazia ou não corresponde a nenhum Produto
+- **THEN** a listagem mostra todos os Produtos ou `Nenhum produto encontrado.`, respectivamente; uma resposta realmente vazia do Xano continua mostrando `Nenhum produto cadastrado.`
+
+### Requirement: Unidade de medida selecionada de catálogo padronizado
+
+Os formulários de criação e edição MUST oferecer o mesmo select, sem texto livre, com os códigos `UN`, `CX`, `RL`, `PCT`, `PAR`, `KG`, `L` e `MT`, apresentados com seus nomes amigáveis. O valor enviado ao Xano MUST ser somente o código permitido em maiúsculas. Na edição, unidades históricas correspondentes a um código permitido sem diferenciar caixa MUST ser normalizadas para a opção canônica; unidade desconhecida MUST NOT ser enviada como valor permitido sem seleção explícita de uma opção válida.
+
+#### Scenario: Selecionar unidade na criação e edição
+- **WHEN** usuário escolhe uma unidade em qualquer formulário
+- **THEN** a interface mostra o rótulo e o Xano recebe somente o código maiúsculo correspondente
+
+#### Scenario: Carregar código histórico em minúsculas
+- **WHEN** um Produto existente contém um código permitido em minúsculas, como `un`
+- **THEN** o formulário seleciona `UN`, não falha ao carregar e salva o código canônico em maiúsculas quando houver atualização
+
 ### Requirement: Leitura de Produtos do Xano
 
 O Reflex MUST carregar a listagem e o detalhe de Produto pelo Xano usando o token Bearer da sessão. O Xano MUST exigir `product.read`. A interface MUST exibir loading e erro sem substituir falhas por dados mockados. A listagem MUST usar o ID Xano para ações e respeitar o envelope paginado.
@@ -10,9 +50,41 @@ O Reflex MUST carregar a listagem e o detalhe de Produto pelo Xano usando o toke
 - **WHEN** usuário autenticado abre `/produtos`
 - **THEN** Reflex consulta `GET /products` com Bearer e mostra os itens reais retornados
 
+#### Scenario: Nome da Categoria na listagem
+- **WHEN** Produtos s?o carregados para `/produtos`
+- **THEN** Reflex consulta as p?ginas necess?rias de `GET /categories` sem filtro de status, associa os registros por `categoria_id` e mostra o nome real inclusive para Categorias inativas, sem fazer chamadas por Produto
+
+#### Scenario: Refer?ncia de Categoria ausente ou inv?lida
+- **WHEN** um Produto n?o possui `categoria_id` ou o ID n?o corresponde aos itens retornados
+- **THEN** a linha mostra `Sem categoria` ou `Categoria n?o encontrada`, respectivamente, sem interromper a listagem
+
 #### Scenario: Leitura recusada
 - **WHEN** Xano responde que a sessão ou permissão não autoriza leitura
 - **THEN** a interface mostra erro amigável e não apresenta dados mockados como fallback
+
+### Requirement: A listagem deve exibir saldo e situação oficiais do Xano
+
+Ao carregar `/produtos`, Reflex MUST consultar as páginas de `GET /stock` com o Bearer atual e associar os itens pelo `product_id`, sem chamadas individuais por Produto. O Xano MUST autorizar a leitura com `stock.read`. A coluna `Qtd.` MUST mostrar `quantidade_disponivel`; `Situação do estoque` MUST mapear `sem_estoque`, `abaixo_minimo` e `normal` para rótulos amigáveis. `Status` MUST continuar exibindo somente o status cadastral `ativo`/`inativo`. Reflex MUST NOT calcular saldo nem situação.
+
+#### Scenario: Saldo e situação carregados
+- **WHEN** o Produto possui item correspondente em `GET /stock`
+- **THEN** a listagem mostra quantidade e situação retornadas pelo Xano, associadas pelo `product_id`
+
+#### Scenario: Paginação do saldo
+- **WHEN** uma página de `GET /stock` retorna 100 itens
+- **THEN** Reflex carrega a próxima página e continua até obter uma página com menos de 100 itens
+
+#### Scenario: Saldo ausente
+- **WHEN** um Produto não possui item correspondente em `GET /stock`
+- **THEN** a quantidade aparece como `—` e a situação como `Saldo não encontrado`, sem assumir zero e sem interromper a listagem
+
+#### Scenario: Permissão de consulta recusada
+- **WHEN** `GET /stock` retorna HTTP 403
+- **THEN** a listagem mostra mensagem amigável de falta de permissão sem dados substitutos
+
+#### Scenario: Sessão inválida na consulta de saldo
+- **WHEN** `GET /stock` retorna HTTP 401
+- **THEN** a sessão é tratada como inválida e o usuário é encaminhado para login
 
 ### Requirement: Criação de Produto
 
@@ -81,3 +153,25 @@ As rotas de criação e edição MUST reutilizar a autenticação e o guard de r
 #### Scenario: Chamada sem grant de escrita
 - **WHEN** usuário consegue acionar uma ação mas não possui grant atual
 - **THEN** Xano rejeita a operação e Reflex apresenta o erro sem alterar dados
+
+### Requirement: Seletores pesquis?veis de relacionamentos din?micos
+
+Os formul?rios de Produto MUST oferecer seletores pesquis?veis para Categoria e Fornecedor padr?o, mostrando r?tulos amig?veis e guardando/enviando o ID real do registro. Ao abrir ou focar o campo, o seletor MUST mostrar as op??es carregadas; digitar MUST filtrar localmente por substring sem diferenciar caixa ou acentos. A pesquisa MUST NOT fazer chamadas HTTP por tecla. Para endpoints paginados, a interface MUST carregar inicialmente no m?ximo uma p?gina de at? 100 op??es e MUST permitir solicitar explicitamente a pr?xima p?gina quando houver mais resultados, sem baixar o cat?logo inteiro automaticamente. A valida??o e autoriza??o definitivas permanecem no Xano.
+
+O mesmo padr?o reutiliz?vel MUST orientar futuros seletores de Produto em movimenta??es, Fornecedor em entradas e outros relacionamentos. A edi??o MUST manter vis?vel uma refer?ncia atual inativa obtida por ID, sem permitir nova associa??o a ela nem remov?-la automaticamente.
+
+#### Scenario: Pesquisar e selecionar Categoria
+- **WHEN** usu?rio abre o campo de Categoria e digita parte do nome, inclusive sem acentos ou com caixa diferente
+- **THEN** a lista carregada ? filtrada localmente, a sele??o exibe o nome da Categoria e o formul?rio guarda/envia o ID real
+
+#### Scenario: Pesquisar e selecionar Fornecedor padr?o
+- **WHEN** usu?rio abre o campo de Fornecedor padr?o e digita parte do nome, inclusive sem acentos ou com caixa diferente
+- **THEN** a lista carregada ? filtrada localmente, a sele??o exibe o nome do Fornecedor e o formul?rio guarda/envia o ID real ou a op??o `Sem fornecedor padr?o`
+
+#### Scenario: Cat?logo com mais de uma p?gina
+- **WHEN** a p?gina atual de op??es n?o inclui o relacionamento desejado e h? mais op??es no endpoint
+- **THEN** usu?rio pode carregar a pr?xima p?gina explicitamente; o seletor n?o carrega todas as p?ginas automaticamente nem consulta por tecla
+
+#### Scenario: Preservar relacionamento inativo durante edi??o
+- **WHEN** Produto possui Categoria ou Fornecedor atualmente inativo
+- **THEN** o formul?rio mostra o r?tulo obtido por ID e preserva o v?nculo sem oferecer o item inativo como nova sele??o

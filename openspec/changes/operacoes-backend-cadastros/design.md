@@ -329,6 +329,22 @@ Usar Xano unit tests para funções reutilizáveis e workflow tests para chamada
 - **Campos opcionais limpáveis em PATCH:** inputs de valor opcionais não anuláveis permitem rejeitar `null` direto sem sentinelas; flags booleanas explícitas implementam limpeza. A resposta exata da validação de schema para `null` direto ainda precisa ser confirmada em workflow test contra `INVALID_INPUT`.
 - **Limite das APIs quick-start:** o Líder não recebe acesso integral a `members_accounts` nem `admin/user_role`; essas rotas continuam no mecanismo legado `admin/member`, fora da autorização do estoque.
 
+## Fornecedor padrão opcional de Produto
+
+`product` mantém sua chave primária `id` e acrescenta `fornecedor_padrao_id` opcional como referência a `supplier.id`. A referência é uma sugestão padrão para facilitar futuras entradas; não impõe exclusividade nem impede que uma entrada use outro Fornecedor. Produto sem Fornecedor padrão continua válido. Inativar um Fornecedor não apaga nem troca referências existentes.
+
+`POST /products` aceita `fornecedor_padrao_id` opcional. Quando informado, o backend verifica que o Fornecedor existe e está ativo antes de criar Produto e saldo inicial. `GET /products` e `GET /products/by_id/{product_id}` retornam o campo junto aos demais atributos da linha de Produto. `PATCH /products/by_id/{product_id}` aceita nova referência somente se o Fornecedor existir e estiver ativo; preservar sem mudança uma referência atual inativa é permitido.
+
+Como o XanoScript validado não distingue propriedade omitida de propriedade presente como `null`, a limpeza no PATCH usa `limpar_fornecedor_padrao=true`. Omitir `fornecedor_padrao_id` preserva o vínculo; escolher `Sem fornecedor padrão` envia a flag de limpeza. Informar o ID junto da flag `true` é `INVALID_INPUT`; `false` sozinho não altera o vínculo; PATCH sem alteração efetiva segue rejeitado. `fornecedor_padrao_id` direto como `null` é rejeitado pelo input opcional não anulável.
+
+Os endpoints continuam usando `product.create` no POST e `product.update` no PATCH. A seleção consome `GET /suppliers` protegido por `supplier.read`; a interface pagina Fornecedores ativos. Na edição, se a referência atual estiver inativa, `GET /suppliers/by_id/{supplier_id}` carrega esse registro como opção atual desabilitada, permitindo preservar o vínculo, limpá-lo ou escolher outro Fornecedor ativo.
+
+## Regras registradas para futura Entrada de estoque
+
+Ao identificar Produto por código de barras, a futura tela poderá preencher código, nome e Fornecedor padrão como sugestão. O Fornecedor da movimentação poderá ser alterado conforme regra futura; o padrão do Produto nunca restringe a entrada a um único fornecedor.
+
+A futura Entrada exibirá campo de data e hora opcional. Se informado, o backend usará o valor recebido; se omitido, o backend usará a data e hora efetiva de conclusão/registro da Entrada, sem depender somente do frontend. A mensagem prevista é: “Se nenhuma data for informada, será utilizada automaticamente a data e hora do registro da entrada.” Nada disso implementa tela ou operação de Entrada nesta mudança.
+
 ## Decisões aprovadas pelo grupo
 
 - O perfil dos usuários existentes será atribuído manualmente pelo Líder; não haverá conversão automática de `admin`/`member`.

@@ -377,6 +377,34 @@ O contrato de erro MUST permitir distinguir autenticação, perfil ausente/invá
 - **THEN** o backend MUST retornar a categoria/código correspondente
 - **AND** MUST NOT depender apenas de texto livre para que o cliente diferencie o resultado
 
+### Requirement: Produto pode manter um Fornecedor padrão opcional
+
+Produto MUST aceitar uma referência opcional `fornecedor_padrao_id` para `supplier.id`. A referência MUST ser consultável em listagem e detalhe, MUST aceitar ausência, MUST NOT restringir Fornecedores utilizados em entradas e MUST permanecer intacta quando o Fornecedor for inativado. O POST MUST validar existência e status ativo quando a referência for informada. O PATCH MUST validar existência e status ativo somente para nova associação; preservar associação atual inativa MUST ser permitido. O PATCH MUST preservar a referência quando o campo for omitido e MUST limpar a associação somente com `limpar_fornecedor_padrao=true`; envio direto de `null`, combinação de ID com flag verdadeira e PATCH sem mudança efetiva MUST ser rejeitado.
+
+#### Scenario: Criar Produto sem Fornecedor padrão
+- **WHEN** POST de Produto omite `fornecedor_padrao_id`
+- **THEN** Produto é criado sem Fornecedor padrão e mantém seu saldo inicial usual
+
+#### Scenario: Associar Fornecedor ativo
+- **WHEN** POST ou PATCH define Fornecedor existente e ativo
+- **THEN** o backend persiste o ID em `fornecedor_padrao_id` e retorna a referência no registro de Produto
+
+#### Scenario: Rejeitar nova associação inválida
+- **WHEN** POST ou PATCH tenta associar Fornecedor inexistente ou inativo
+- **THEN** o backend rejeita a operação sem criar Produto ou alterar parcialmente o cadastro
+
+#### Scenario: Preservar ou limpar vínculo
+- **WHEN** PATCH omite `fornecedor_padrao_id` ou recebe `limpar_fornecedor_padrao=true`
+- **THEN** a omissão preserva a associação e a flag limpa a associação para `null`; flag e ID juntos são rejeitados
+
+#### Scenario: Fornecedor atual inativado
+- **WHEN** Produto já associado a Fornecedor é consultado ou atualizado sem trocar a referência após a inativação
+- **THEN** a relação permanece íntegra e o PATCH não exige reativação para preservar a referência existente
+
+#### Scenario: Inativar Fornecedor associado
+- **WHEN** Fornecedor usado como padrão por Produto é inativado
+- **THEN** a referência do Produto permanece persistida e futuras entradas não ficam restritas a esse Fornecedor
+
 ## Acceptance Criteria
 
 - Todas as rotas e permissões correspondem às tabelas do Design; cada endpoint autenticado verifica grant antes de ler ou escrever dados protegidos.

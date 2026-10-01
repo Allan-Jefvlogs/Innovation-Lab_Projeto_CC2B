@@ -9,6 +9,9 @@ table "product" {
     int categoria_id {
       table = "category"
     }
+    int fornecedor_padrao_id? {
+      table = "supplier"
+    }
     text unidade_medida
     decimal estoque_minimo filters=min:0
     enum status?="ativo" {

@@ -6,6 +6,7 @@ query "products" verb=POST {
     text codigo
     text nome
     int categoria_id
+    int fornecedor_padrao_id?
     text unidade_medida
     decimal estoque_minimo filters=min:0
     text? descricao?
@@ -30,6 +31,20 @@ query "products" verb=POST {
       error = "BUSINESS_RULE_VIOLATION"
     }
 
+    conditional {
+      if ($input.fornecedor_padrao_id != null) {
+        db.get supplier {
+          field_name = "id"
+          field_value = $input.fornecedor_padrao_id
+        } as $default_supplier
+
+        precondition ($default_supplier != null && $default_supplier.status == "ativo") {
+          error_type = "inputerror"
+          error = "BUSINESS_RULE_VIOLATION"
+        }
+      }
+    }
+
     db.query product {
       where = $db.product.codigo == $input.codigo
       return = {type: "exists"}
@@ -42,16 +57,28 @@ query "products" verb=POST {
 
     try_catch {
       try {
-        db.add product {
-          data = {
-            codigo: $input.codigo,
-            nome: $input.nome,
-            categoria_id: $input.categoria_id,
-            unidade_medida: $input.unidade_medida,
-            estoque_minimo: $input.estoque_minimo,
-            descricao: $input.descricao
+        db.transaction {
+          stack {
+            db.add product {
+              data = {
+                codigo: $input.codigo,
+                nome: $input.nome,
+                categoria_id: $input.categoria_id,
+                fornecedor_padrao_id: $input.fornecedor_padrao_id,
+                unidade_medida: $input.unidade_medida,
+                estoque_minimo: $input.estoque_minimo,
+                descricao: $input.descricao
+              }
+            } as $product
+
+            db.add inventory_stock {
+              data = {
+                product_id: $product.id,
+                quantidade_disponivel: 0
+              }
+            } as $initial_stock
           }
-        } as $product
+        }
       }
       catch {
         db.query product {

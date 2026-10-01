@@ -99,6 +99,15 @@
 - [ ] 10.5 Testar duplicidades concorrentes, atomicidade de grants/auditoria, efeito imediato de alteração de permissão e ausência de efeitos em estoque.
 - [x] 10.6 Revisar especificação, cobertura de cenários e diff dos artefatos da change; não executar sincronização nem Archive nesta change.
 
+## 11. Implementar Fornecedor padrão opcional de Produto
+
+- [x] 11.1 Adicionar `product.fornecedor_padrao_id` nullable como referência a `supplier.id`, sem unicidade ou exclusividade Produto–Fornecedor.
+- [x] 11.2 Aceitar a referência opcional no POST, validar Fornecedor existente/ativo e retornar o campo nos registros de Produto.
+- [x] 11.3 Aceitar alteração/limpeza explícita no PATCH, validar somente nova associação e preservar vínculo atual inativo.
+- [x] 11.4 Integrar seleção real de Fornecedores ativos em criação/edição e preservar opção atual inativa na edição.
+- [x] 11.5 Validar os artefatos XanoScript pelo MCP e atualizar Design/Specification desta evolução.
+- [ ] 11.6 Testar em datasource isolado criação sem Fornecedor, associação ativa, rejeições, edição/limpeza, preservação após inativação e retorno do campo por GET.
+
 ## Apply review execution notes
 
 - `Inventory/bootstrap_first_leader` e `inventory_bootstrap_state` foram criados e validados estaticamente; a função não foi executada porque os artefatos não foram sincronizados ao workspace.
