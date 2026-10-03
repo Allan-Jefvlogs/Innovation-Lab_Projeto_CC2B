@@ -3,8 +3,8 @@ import reflex as rx
 from .pages.login import login
 from .pages.dashboard import dashboard
 from .pages.produtos import ProductsState, produtos, novo_produto, editar_produto
-from .pages.categorias import categorias
-from .pages.fornecedores import fornecedores
+from .pages.categorias import CategoryState, categorias
+from .pages.fornecedores import SupplierState, fornecedores
 from .pages.estoque import estoque
 from .pages.movimentacoes import EntryState, ExitState, MovementHistoryState, historico, entrada, saida
 from .pages.usuarios import usuarios
@@ -23,8 +23,8 @@ app.add_page(dashboard, route="/dashboard", title="Dashboard | NexStock", on_loa
 app.add_page(editar_produto, route="/produtos/[product_route_id]/editar", title="Editar produto | NexStock", on_load=ProductsState.load_edit_page)
 app.add_page(produtos, route="/produtos", title="Produtos | NexStock", on_load=ProductsState.load_page)
 app.add_page(novo_produto, route="/produtos/novo", title="Novo produto | NexStock", on_load=ProductsState.load_create_page)
-app.add_page(categorias, route="/categorias", title="Categorias | NexStock", on_load=AuthState.require_auth)
-app.add_page(fornecedores, route="/fornecedores", title="Fornecedores | NexStock", on_load=AuthState.require_auth)
+app.add_page(categorias, route="/categorias", title="Categorias | NexStock", on_load=CategoryState.load_page)
+app.add_page(fornecedores, route="/fornecedores", title="Fornecedores | NexStock", on_load=SupplierState.load_page)
 app.add_page(estoque, route="/estoque", title="Estoque | NexStock", on_load=AuthState.require_auth)
 app.add_page(historico, route="/movimentacoes", title="Histórico | NexStock", on_load=MovementHistoryState.load_page)
 app.add_page(entrada, route="/movimentacoes/entradas", title="Entrada | NexStock", on_load=EntryState.load_entry_page)

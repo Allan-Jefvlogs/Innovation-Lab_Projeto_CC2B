@@ -4,12 +4,12 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
 
   input {
     int supplier_id
-    text nome_razao_social?
-    text tipo_documento?
-    text documento?
-    text contato?
+    text nome_razao_social? filters=trim
+    text tipo_documento? filters=trim
+    text documento? filters=trim
+    text contato? filters=trim
     bool limpar_contato?
-    text endereco?
+    text endereco? filters=trim
     bool limpar_endereco?
   }
 
@@ -26,6 +26,15 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
     precondition ($existing != null) {
       error_type = "notfound"
       error = "NOT_FOUND"
+    }
+
+    precondition ($input.nome_razao_social == null || $input.nome_razao_social != "") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
+    precondition ($input.documento == null || $input.documento != "") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
     }
 
     precondition (!($input.contato != null && $input.limpar_contato == true)) {

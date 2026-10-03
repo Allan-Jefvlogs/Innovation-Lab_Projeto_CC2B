@@ -279,12 +279,10 @@ class ProductsState(rx.State):
         return {"id": category_id, "label": label, "disabled": "true" if disabled else "false"}
 
     @staticmethod
-    def _supplier_option(item: dict[str, Any], *, disabled: bool = False) -> dict[str, str]:
+    def _supplier_option(item: dict[str, Any]) -> dict[str, str]:
         supplier_id = str(item.get("id", ""))
         label = str(item.get("nome_razao_social") or f"Fornecedor (ID {supplier_id})")
-        if disabled:
-            label = f"{label} (inativo — vínculo atual)"
-        return {"id": supplier_id, "label": label, "disabled": "true" if disabled else "false"}
+        return {"id": supplier_id, "label": label, "disabled": "false"}
 
     async def _load_categories(self, token: str, current_category_id: int | None = None):
         response = await auth_client.list_categories(token, page=1, per_page=100, status="ativo")
@@ -311,7 +309,7 @@ class ProductsState(rx.State):
         return self.category_options
 
     async def _load_suppliers(self, token: str, current_supplier_id: int | None = None):
-        response = await auth_client.list_suppliers(token, page=1, per_page=100, status="ativo")
+        response = await auth_client.list_suppliers(token, page=1, per_page=100)
         items = [item for item in response["items"] if isinstance(item, dict) and item.get("id") is not None]
         self.supplier_options = [
             {"id": "none", "label": "Sem fornecedor padrão", "disabled": "false"},
@@ -324,9 +322,7 @@ class ProductsState(rx.State):
         ):
             try:
                 current = await auth_client.get_supplier(token, current_supplier_id)
-                self.supplier_options.append(
-                    self._supplier_option(current, disabled=current.get("status") != "ativo")
-                )
+                self.supplier_options.append(self._supplier_option(current))
             except XanoRequestError as exc:
                 if exc.error_code != "NOT_FOUND":
                     raise
@@ -369,7 +365,7 @@ class ProductsState(rx.State):
         self.supplier_loading_more = True
         try:
             page = self.supplier_page + 1
-            response = await auth_client.list_suppliers(token, page=page, per_page=100, status="ativo")
+            response = await auth_client.list_suppliers(token, page=page, per_page=100)
             known = {option["id"] for option in self.supplier_options}
             new_items = [
                 self._supplier_option(item) for item in response["items"]

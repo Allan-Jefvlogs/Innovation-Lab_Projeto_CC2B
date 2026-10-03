@@ -320,6 +320,31 @@ class XanoAuthClient:
             raise XanoServerError("O Xano retornou Categorias em formato inesperado.")
         return data
 
+    async def create_category(self, auth_token: str, nome: str) -> Dict[str, Any]:
+        """Cria uma Categoria; normalização e validação definitivas ficam no Xano."""
+        return await self._inventory_request(
+            "POST",
+            "/categories",
+            auth_token,
+            json_payload={"nome": nome.strip()},
+        )
+
+    async def activate_category(self, auth_token: str, category_id: int) -> Dict[str, Any]:
+        """Ativa uma Categoria e retorna o estado persistido pelo Xano."""
+        return await self._inventory_request(
+            "PATCH",
+            f"/categories/by_id/{category_id}/activate",
+            auth_token,
+        )
+
+    async def inactivate_category(self, auth_token: str, category_id: int) -> Dict[str, Any]:
+        """Inativa uma Categoria sem removê-la nem alterar vínculos de Produto."""
+        return await self._inventory_request(
+            "PATCH",
+            f"/categories/by_id/{category_id}/inactivate",
+            auth_token,
+        )
+
     async def get_category(self, auth_token: str, category_id: int) -> Dict[str, Any]:
         """Consulta uma Categoria por ID para preservar vínculos existentes no formulário."""
         return await self._inventory_request(
@@ -327,16 +352,13 @@ class XanoAuthClient:
         )
 
     async def list_suppliers(
-        self, auth_token: str, page: int = 1, per_page: int = 100, status: Optional[str] = None
+        self, auth_token: str, page: int = 1, per_page: int = 100
     ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {"page": page, "per_page": per_page}
-        if status is not None:
-            params["status"] = status
         data = await self._inventory_request(
             "GET",
             "/suppliers",
             auth_token,
-            params=params,
+            params={"page": page, "per_page": per_page},
         )
         if not isinstance(data.get("items"), list):
             raise XanoServerError("O Xano retornou Fornecedores em formato inesperado.")
@@ -345,6 +367,62 @@ class XanoAuthClient:
     async def get_supplier(self, auth_token: str, supplier_id: int) -> Dict[str, Any]:
         return await self._inventory_request(
             "GET", f"/suppliers/by_id/{supplier_id}", auth_token
+        )
+
+    async def create_supplier(
+        self,
+        auth_token: str,
+        *,
+        nome_razao_social: str,
+        tipo_documento: str,
+        documento: str,
+        contato: Optional[str] = None,
+        endereco: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Cria Fornecedor usando os campos e validações cadastrais do Xano."""
+        payload: Dict[str, Any] = {
+            "nome_razao_social": nome_razao_social.strip(),
+            "tipo_documento": tipo_documento.strip(),
+            "documento": documento.strip(),
+        }
+        if contato and contato.strip():
+            payload["contato"] = contato.strip()
+        if endereco and endereco.strip():
+            payload["endereco"] = endereco.strip()
+        return await self._inventory_request(
+            "POST", "/suppliers", auth_token, json_payload=payload
+        )
+
+    async def update_supplier(
+        self,
+        auth_token: str,
+        supplier_id: int,
+        *,
+        nome_razao_social: str,
+        tipo_documento: str,
+        documento: str,
+        contato: Optional[str] = None,
+        endereco: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atualiza dados cadastrais sem alterar status nem ID do Fornecedor."""
+        payload: Dict[str, Any] = {
+            "nome_razao_social": nome_razao_social.strip(),
+            "tipo_documento": tipo_documento.strip(),
+            "documento": documento.strip(),
+        }
+        if contato and contato.strip():
+            payload["contato"] = contato.strip()
+        else:
+            payload["limpar_contato"] = True
+        if endereco and endereco.strip():
+            payload["endereco"] = endereco.strip()
+        else:
+            payload["limpar_endereco"] = True
+        return await self._inventory_request(
+            "PATCH",
+            f"/suppliers/by_id/{supplier_id}",
+            auth_token,
+            json_payload=payload,
         )
 
     async def list_stock(

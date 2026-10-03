@@ -3,17 +3,26 @@ query "suppliers" verb=POST {
   auth = "user"
 
   input {
-    text nome_razao_social
-    text tipo_documento
-    text documento
-    text? contato?
-    text? endereco?
+    text nome_razao_social filters=trim
+    text tipo_documento filters=trim
+    text documento filters=trim
+    text? contato? filters=trim
+    text? endereco? filters=trim
   }
 
   stack {
     function.run "Inventory/authorize_permission" {
       input = {user_id: $auth.id, permission_code: "supplier.create"}
     } as $authorization
+
+    precondition ($input.nome_razao_social != "") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
+    precondition ($input.documento != "") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
 
     precondition ($input.tipo_documento == "CPF" || $input.tipo_documento == "CNPJ") {
       error_type = "inputerror"

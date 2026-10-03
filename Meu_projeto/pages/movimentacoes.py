@@ -109,12 +109,10 @@ class EntryState(rx.State):
         }
 
     @staticmethod
-    def _supplier_option(item: dict, *, disabled: bool = False) -> dict[str, str]:
+    def _supplier_option(item: dict) -> dict[str, str]:
         supplier_id = str(item.get("id", ""))
         label = str(item.get("nome_razao_social") or f"Fornecedor (ID {supplier_id})")
-        if disabled:
-            label = f"{label} (inativo — vínculo atual)"
-        return {"id": supplier_id, "label": label, "disabled": "true" if disabled else "false"}
+        return {"id": supplier_id, "label": label, "disabled": "false"}
 
     async def load_entry_data(self):
         self.is_loading = True
@@ -141,7 +139,7 @@ class EntryState(rx.State):
             self.product_has_more = len(products_response["items"]) == 100
 
             suppliers_response = await auth_client.list_suppliers(
-                token, page=1, per_page=100, status="ativo"
+                token, page=1, per_page=100
             )
             self.suppliers.extend(
                 self._supplier_option(item)
@@ -244,9 +242,7 @@ class EntryState(rx.State):
         if existing_supplier is None:
             try:
                 supplier = await auth_client.get_supplier(token, int(default_supplier_id))
-                existing_supplier = self._supplier_option(
-                    supplier, disabled=supplier.get("status") != "ativo"
-                )
+                existing_supplier = self._supplier_option(supplier)
                 self.suppliers.append(existing_supplier)
             except XanoError as exc:
                 self.supplier_error = (
@@ -256,15 +252,6 @@ class EntryState(rx.State):
                 self.supplier_id = ""
                 self.supplier_query = ""
                 return
-
-        if existing_supplier.get("disabled") == "true":
-            self.supplier_id = ""
-            self.supplier_query = "Sem fornecedor"
-            self.supplier_error = (
-                "O fornecedor padrão está inativo. Escolha um fornecedor ativo "
-                "ou deixe a entrada sem fornecedor."
-            )
-            return
 
         self.supplier_id = default_supplier_id
         self.supplier_query = existing_supplier["label"]
@@ -380,7 +367,7 @@ class EntryState(rx.State):
         try:
             page_number = self.supplier_page + 1
             response = await auth_client.list_suppliers(
-                token, page=page_number, per_page=100, status="ativo"
+                token, page=page_number, per_page=100
             )
             known = {item["id"] for item in self.suppliers}
             self.suppliers.extend(

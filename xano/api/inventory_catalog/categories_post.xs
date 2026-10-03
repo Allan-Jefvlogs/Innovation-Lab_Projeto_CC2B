@@ -3,13 +3,18 @@ query "categories" verb=POST {
   auth = "user"
 
   input {
-    text nome
+    text nome filters=trim
   }
 
   stack {
     function.run "Inventory/authorize_permission" {
       input = {user_id: $auth.id, permission_code: "category.create"}
     } as $authorization
+
+    precondition ($input.nome != "") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
 
     db.query category {
       where = $db.category.nome == $input.nome
