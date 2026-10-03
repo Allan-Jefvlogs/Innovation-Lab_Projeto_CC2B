@@ -24,6 +24,7 @@ table "inventory_movement" {
   index = [
     {type: "primary", field: [{name: "id"}]}
     {type: "btree", field: [{name: "product_id"}, {name: "data_hora", op: "desc"}]}
+    {type: "btree", field: [{name: "data_hora", op: "desc"}, {name: "id", op: "desc"}]}
     {type: "btree", field: [{name: "user_id"}]}
     {type: "btree", field: [{name: "supplier_id"}]}
   ]

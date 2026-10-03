@@ -1,9 +1,13 @@
 """Cliente HTTP para comunicação com a API do Xano."""
 
 import os
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 # Carrega variáveis do arquivo .env caso exista na raiz do projeto
@@ -42,6 +46,20 @@ _XANO_ERROR_CODES = {
     "STOCK_UPDATE_FAILED",
     "STOCK_CONCURRENCY_CONFLICT",
 }
+
+_SENSITIVE_LOG_KEYS = {"authorization", "token", "auth_token", "password", "secret"}
+
+
+def _safe_error_log_value(value: Any) -> Any:
+    """Redacte dados de autenticação antes de registrar detalhes do Xano."""
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if str(key).lower() in _SENSITIVE_LOG_KEYS else _safe_error_log_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_safe_error_log_value(item) for item in value]
+    return value
 
 
 def _extract_xano_error_code(payload: Any) -> str:
@@ -177,6 +195,12 @@ class XanoAuthClient:
                     json=json_payload,
                 )
         except (httpx.RequestError, httpx.TimeoutException) as exc:
+            logger.exception(
+                "Xano transport failed: method=%s path=%s exception_type=%s",
+                method,
+                path,
+                type(exc).__name__,
+            )
             raise XanoConnectionError(
                 "Não foi possível conectar ao Xano. Verifique sua conexão e tente novamente."
             ) from exc
@@ -184,12 +208,34 @@ class XanoAuthClient:
         try:
             data = response.json() if response.content else {}
         except ValueError as exc:
+            logger.exception(
+                "Xano JSON decode failed: method=%s path=%s status=%s",
+                method,
+                path,
+                response.status_code,
+            )
             raise XanoServerError(
                 "O Xano retornou uma resposta inválida.", status_code=response.status_code
             ) from exc
 
+        logger.info(
+            "Xano response: method=%s path=%s status=%s python_type=%s keys=%s",
+            method,
+            path,
+            response.status_code,
+            type(data).__name__,
+            sorted(data.keys()) if isinstance(data, dict) else None,
+        )
+
         if response.status_code in (200, 201):
             if not isinstance(data, dict):
+                logger.error(
+                    "Unexpected Xano success response: method=%s path=%s status=%s python_type=%s",
+                    method,
+                    path,
+                    response.status_code,
+                    type(data).__name__,
+                )
                 raise XanoServerError(
                     "O Xano retornou uma resposta em formato inesperado.",
                     status_code=response.status_code,
@@ -197,6 +243,17 @@ class XanoAuthClient:
             return data
 
         payload = data if isinstance(data, dict) else {}
+        logger.error(
+            "Xano request failed: method=%s path=%s status=%s python_type=%s keys=%s error_code=%r error_message=%r error_payload=%r",
+            method,
+            path,
+            response.status_code,
+            type(data).__name__,
+            sorted(data.keys()) if isinstance(data, dict) else None,
+            _safe_error_log_value(data.get("code")) if isinstance(data, dict) else None,
+            _safe_error_log_value(data.get("message")) if isinstance(data, dict) else None,
+            _safe_error_log_value(data.get("payload")) if isinstance(data, dict) else None,
+        )
         if response.status_code == 401:
             raise XanoAuthError(
                 "Sua sessão expirou. Faça login novamente.",
@@ -229,7 +286,6 @@ class XanoAuthClient:
             "STOCK_BALANCE_NOT_FOUND": "Não foi encontrado saldo de estoque para este produto.",
             "STOCK_UPDATE_FAILED": "Não foi possível atualizar o estoque. Tente novamente.",
             "STOCK_CONCURRENCY_CONFLICT": "Houve um conflito ao atualizar o estoque. Tente novamente.",
-            "API_ERROR": "Não foi possível registrar a entrada. Verifique os dados e tente novamente.",
         }
         message = friendly_messages.get(
             error_code,
@@ -304,6 +360,68 @@ class XanoAuthClient:
         )
         if not isinstance(data.get("items"), list):
             raise XanoServerError("O Xano retornou saldos de estoque em formato inesperado.")
+        return data
+
+    async def list_movements(
+        self,
+        auth_token: str,
+        page: int = 1,
+        per_page: int = 20,
+        tipo: Optional[str] = None,
+        product_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Consulta uma página do histórico enriquecido no grupo Inventory Stock."""
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if tipo in {"entrada", "saida"}:
+            params["tipo"] = tipo
+        for name, value in (("product_id", product_id), ("user_id", user_id)):
+            if value is None or value == "":
+                continue
+            try:
+                numeric_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric_id <= 0:
+                continue
+            params[name] = numeric_id
+        logger.info("Movement history params: %r", params)
+        data = await self._inventory_request(
+            "GET",
+            "/movements",
+            auth_token,
+            params=params,
+            group_url=self.stock_group_url,
+        )
+        if not isinstance(data.get("items"), list):
+            logger.error(
+                "Unexpected paginated Xano response: method=GET path=/movements python_type=%s keys=%s items_type=%s",
+                type(data).__name__,
+                sorted(data.keys()),
+                type(data.get("items")).__name__,
+            )
+            raise XanoServerError("O Xano retornou movimentações em formato inesperado.")
+        return data
+
+    async def list_movement_users(
+        self, auth_token: str, page: int = 1, per_page: int = 100
+    ) -> Dict[str, Any]:
+        """Lista somente ID e nome para preencher o filtro do histórico."""
+        data = await self._inventory_request(
+            "GET",
+            "/movement_users",
+            auth_token,
+            params={"page": page, "per_page": per_page},
+            group_url=self.stock_group_url,
+        )
+        if not isinstance(data.get("items"), list):
+            logger.error(
+                "Unexpected paginated Xano response: method=GET path=/movement_users python_type=%s keys=%s items_type=%s",
+                type(data).__name__,
+                sorted(data.keys()),
+                type(data.get("items")).__name__,
+            )
+            raise XanoServerError("O Xano retornou usuários em formato inesperado.")
         return data
 
     async def create_stock_entry(

@@ -45,3 +45,23 @@ A Saída chama XanoClient.create_stock_exit, que envia POST /api:estoque/exits c
 O State aceita quantidade decimal finita maior que zero, exige Produto com saldo carregado e bloqueia envio quando saldo é zero ou quantidade supera saldo_disponivel. O backend continua autoridade final; INSUFFICIENT_STOCK e os demais códigos funcionais têm mensagens específicas. Data/hora vazia é omitida para o backend preencher o horário; o valor informado é encaminhado sem ajuste de fuso.
 
 Durante o POST, is_submitting bloqueia repetição e o botão mostra Registrando.... Sucesso mostra saldo_atual retornado pelo backend, atualiza o cache local de saldos da tela e limpa a operação. Erros preservam os campos; 401 segue o fluxo existente de sessão e 403 informa falta de permissão. A Entrada mantém seu State e seu payload próprios.
+
+## Integração de leitura do Histórico
+
+MovementHistoryState carrega a primeira página de Produtos para o filtro e a página atual de movimentos ao abrir /movimentacoes. A rota mantém AuthState.require_auth; ao entrar novamente no Histórico, o on_load chama GET /movements de novo, refletindo entradas e saídas registradas desde a visita anterior.
+
+XanoClient.list_movements usa o grupo canônico api:estoque e envia page, per_page=20 e os filtros tipo/product_id somente quando aplicáveis. Uma mudança de filtro reinicia em page 1 e busca novamente no backend; ambos os filtros podem ser combinados. A paginação usa curPage, pageTotal, nextPage, prevPage e itemsTotal devolvidos pelo endpoint e preserva os filtros ao mudar de página.
+
+O backend já entrega Produto, usuário e Fornecedor por joins. A tela usa product_code, product_name, user_name e supplier_name da própria linha, sem chamadas adicionais por item. O seletor de Produto reutiliza searchable_select, opções locais dos Produtos carregados, busca parcial case-insensitive/accent-insensitive e carregamento explícito de páginas adicionais; digitar não dispara chamadas ao Xano.
+
+A tabela apresenta Data/Hora, Tipo, Código, Produto, Quantidade, Usuário, Fornecedor, Motivo e Observação. Tipo é exibido como Entrada ou Saída, preservando o valor de API no dado base. Quantidades são formatadas sem trocar o sinal e sem arredondar, usando vírgula decimal quando necessário. Fornecedor ausente e observação vazia são exibidos como travessão; Produto e Usuário sem nome recebem fallback amigável. A ordem recebida do backend é preservada.
+
+O campo data_hora observado chega como epoch em milissegundos. MovementHistoryState formata o valor para dd/mm/aaaa HH:mm com datetime.fromtimestamp e o fuso local da aplicação, sem ajuste manual de timezone. Valores ausentes ou inválidos exibem travessão.
+
+Durante a consulta, a tabela anterior é limpa e um indicador de carregamento é mostrado. Sem itens, a tela informa que nenhuma movimentação foi encontrada. Erros 401 seguem o redirecionamento existente para login; 403/PERMISSION_DENIED e INVALID_INPUT recebem mensagens específicas; erros de conexão e inesperados exibem mensagens amigáveis sem traceback. A integração não executa operações de escrita.
+
+## Filtro de usuário e alinhamento do Histórico
+
+MovementHistoryState carrega a primeira página de `GET /movement_users` para popular a opção Todos os usuários e as opções reais. O seletor armazena `user_id`, apresenta somente o nome e carrega outras páginas sob demanda. Digitação pesquisa somente os nomes já carregados. Ao selecionar usuário, tipo ou Produto pode permanecer ativo; os três filtros são enviados juntos ao `GET /movements`. Limpar filtros remove os três e retorna à primeira página.
+
+A área de controles é agrupada sob o rótulo Filtros e permite quebra de linha em telas menores. Cabeçalho e conteúdo da tabela usam o mesmo grid de nove colunas e larguras, com coluna Quantidade de 120px alinhada à direita e Usuário em coluna própria de 170px alinhada à esquerda. Tipo fica centralizado; as demais colunas ficam à esquerda. A tabela usa overflow horizontal quando o viewport não comporta a largura mínima conjunta.

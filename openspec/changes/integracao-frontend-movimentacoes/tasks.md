@@ -49,3 +49,20 @@
 - [x] 6.5 Documentar contrato, saldo, opcionais, identidade do usuário e tratamento de erros.
 - [x] 6.6 Validar compilação Reflex, OpenSpec strict e git diff --check sem chamar POST /exits.
 - [ ] 6.7 Validar manualmente a Saída no navegador sem registrar movimentação de teste.
+
+## 7. Integração do Histórico
+
+- [x] 7.1 Adicionar XanoClient.list_movements para GET /api:estoque/movements com filtros opcionais e paginação.
+- [x] 7.2 Criar MovementHistoryState isolado de EntryState e ExitState e carregar a página no on_load protegido.
+- [x] 7.3 Exibir tabela com campos enriquecidos, tipo, timestamp, quantidade e fallbacks amigáveis sem N+1.
+- [x] 7.4 Implementar filtros combináveis de tipo/Produto, busca local de Produtos e paginação real.
+- [x] 7.5 Documentar estados de loading, vazio, erros e comportamento de somente leitura.
+- [x] 7.6 Validar Reflex compile, OpenSpec strict e git diff --check sem chamadas de escrita.
+
+## 8. Filtro por usuário e ajuste de apresentação
+
+- [x] 8.1 Adicionar `user_id` opcional à chamada do cliente e ao `MovementHistoryState`.
+- [x] 8.2 Carregar opções paginadas de usuários com ID e nome, sem busca por movimentação.
+- [x] 8.3 Reorganizar controles sob Filtros e incluir Usuário mantendo filtros combináveis e limpeza conjunta.
+- [x] 8.4 Alinhar cabeçalho e linhas em grid compartilhado com larguras próprias para Quantidade e Usuário.
+- [x] 8.5 Validar XanoScript, Reflex compile, OpenSpec strict e `git diff --check`; não publicar.

@@ -1,5 +1,7 @@
 import reflex as rx
 import math
+import logging
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from ..components.layout import mock_table, page, section
@@ -14,6 +16,22 @@ from ..services.xano_client import (
     auth_client,
 )
 from ..state import AuthState
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log_history_failure(operation: str, exc: Exception) -> None:
+    payload = getattr(exc, "payload", None)
+    logger.exception(
+        "Movement history request failed: operation=%s exception_type=%s status=%s error_code=%s payload_type=%s payload_keys=%s",
+        operation,
+        type(exc).__name__,
+        getattr(exc, "status_code", None),
+        getattr(exc, "error_code", None),
+        type(payload).__name__ if payload is not None else None,
+        sorted(payload.keys()) if isinstance(payload, dict) else None,
+    )
 
 
 class EntryState(rx.State):
@@ -856,31 +874,601 @@ class ExitState(rx.State):
             self.is_submitting = False
 
 
+class MovementHistoryState(rx.State):
+    """Consulta paginada do histórico com filtros independentes das operações."""
+
+    movements: list[dict[str, str]] = []
+    is_loading: bool = False
+    error_message: str = ""
+    product_filter_error: str = ""
+    user_filter_error: str = ""
+
+    current_page: int = 1
+    per_page: int = 20
+    total_items: int = 0
+    total_pages: int = 1
+    next_page: int | None = None
+    prev_page: int | None = None
+
+    filter_type: str = "Todos"
+    filter_product_id: str = ""
+    filter_user_id: str = ""
+    product_options: list[dict[str, str]] = []
+    product_query: str = ""
+    product_options_open: bool = False
+    product_page: int = 1
+    product_has_more: bool = False
+    product_loading_more: bool = False
+    user_options: list[dict[str, str]] = [{"id": "", "label": "Todos os usuários"}]
+    user_query: str = ""
+    user_options_open: bool = False
+    user_page: int = 1
+    user_has_more: bool = False
+    user_loading_more: bool = False
+
+    @rx.var
+    def filtered_product_options(self) -> list[dict[str, str]]:
+        query = normalize_search_text(self.product_query)
+        if not query:
+            return self.product_options
+        return [
+            item for item in self.product_options
+            if query in normalize_search_text(item.get("label", ""))
+        ]
+
+    @rx.var
+    def filtered_user_options(self) -> list[dict[str, str]]:
+        query = normalize_search_text(self.user_query)
+        if not query:
+            return self.user_options
+        return [
+            item for item in self.user_options
+            if query in normalize_search_text(item.get("label", ""))
+        ]
+
+    def load_page(self):
+        return [
+            AuthState.require_auth(),
+            MovementHistoryState.load_products(),
+            MovementHistoryState.load_users(),
+            MovementHistoryState.load_movements(self.current_page),
+        ]
+
+    async def _session_token(self) -> str:
+        auth_state = await self.get_state(AuthState)
+        return str(auth_state.auth_token or "").strip()
+
+    @staticmethod
+    def _product_option(item: dict) -> dict[str, str]:
+        product_id = str(item.get("id", ""))
+        code = str(item.get("codigo") or "")
+        name = str(item.get("nome") or "")
+        return {
+            "id": product_id,
+            "label": f"{code} - {name}".strip(" -"),
+        }
+
+    async def load_products(self):
+        self.product_filter_error = ""
+        self.product_options = [{"id": "", "label": "Todos os produtos"}]
+        self.product_page = 1
+        self.product_has_more = False
+        token = await self._session_token()
+        if not token:
+            return
+        try:
+            response = await auth_client.list_products(token, page=1, per_page=100)
+            self.product_options.extend(
+                self._product_option(item)
+                for item in response["items"]
+                if isinstance(item, dict) and item.get("id") is not None
+            )
+            self.product_has_more = len(response["items"]) == 100
+        except XanoAuthError as exc:
+            _log_history_failure("products", exc)
+            return rx.redirect("/")
+        except XanoError as exc:
+            _log_history_failure("products", exc)
+            self.product_filter_error = "Não foi possível carregar Produtos para o filtro."
+        except Exception as exc:
+            _log_history_failure("products", exc)
+            self.product_filter_error = "Não foi possível carregar Produtos para o filtro."
+
+    @staticmethod
+    def _user_option(item: dict) -> dict[str, str]:
+        return {
+            "id": str(item.get("id", "")),
+            "label": str(item.get("name") or "Usuário não encontrado"),
+        }
+
+    async def load_users(self):
+        self.user_filter_error = ""
+        self.user_options = [{"id": "", "label": "Todos os usuários"}]
+        self.user_page = 1
+        self.user_has_more = False
+        token = await self._session_token()
+        if not token:
+            return
+        try:
+            response = await auth_client.list_movement_users(token, page=1, per_page=100)
+            self.user_options.extend(
+                self._user_option(item)
+                for item in response["items"]
+                if isinstance(item, dict) and item.get("id") is not None
+            )
+            self.user_has_more = len(response["items"]) == 100
+        except XanoAuthError as exc:
+            _log_history_failure("movement_users", exc)
+            return rx.redirect("/")
+        except XanoError as exc:
+            _log_history_failure("movement_users", exc)
+            self.user_filter_error = "Não foi possível carregar usuários para o filtro."
+        except Exception as exc:
+            _log_history_failure("movement_users", exc)
+            self.user_filter_error = "Não foi possível carregar usuários para o filtro."
+
+    async def load_more_users(self):
+        if self.user_loading_more or not self.user_has_more:
+            return
+        token = await self._session_token()
+        if not token:
+            return
+        self.user_loading_more = True
+        try:
+            page = self.user_page + 1
+            response = await auth_client.list_movement_users(token, page=page, per_page=100)
+            known = {item["id"] for item in self.user_options}
+            self.user_options.extend(
+                self._user_option(item)
+                for item in response["items"]
+                if isinstance(item, dict)
+                and item.get("id") is not None
+                and str(item["id"]) not in known
+            )
+            self.user_page = page
+            self.user_has_more = len(response["items"]) == 100
+        except XanoAuthError:
+            return rx.redirect("/")
+        except XanoError:
+            self.user_filter_error = "Não foi possível carregar mais usuários para o filtro."
+        finally:
+            self.user_loading_more = False
+
+    def search_products(self, value: str):
+        self.product_query = value
+        self.product_options_open = True
+
+    def open_product_options(self):
+        self.product_options_open = True
+
+    def close_product_options(self, value: str = ""):
+        self.product_options_open = False
+
+    def close_product_options_on_escape(self, key: str, modifiers: dict | None = None):
+        if key == "Escape":
+            self.product_options_open = False
+
+    def search_users(self, value: str):
+        self.user_query = value
+        self.user_options_open = True
+
+    def open_user_options(self):
+        self.user_options_open = True
+
+    def close_user_options(self, value: str = ""):
+        self.user_options_open = False
+
+    def close_user_options_on_escape(self, key: str, modifiers: dict | None = None):
+        if key == "Escape":
+            self.user_options_open = False
+
+    def select_user_filter(self, user_id: str):
+        self.filter_user_id = "" if user_id in (None, "", "0", 0) else str(user_id)
+        selected = next(
+            (item for item in self.user_options if item["id"] == user_id),
+            None,
+        )
+        self.user_query = selected["label"] if selected else ""
+        self.user_options_open = False
+        self.current_page = 1
+        return [MovementHistoryState.load_movements(1)]
+
+    def select_product_filter(self, product_id: str):
+        self.filter_product_id = "" if product_id in (None, "", "0", 0) else str(product_id)
+        selected = next(
+            (item for item in self.product_options if item["id"] == product_id),
+            None,
+        )
+        self.product_query = selected["label"] if selected else ""
+        self.product_options_open = False
+        self.current_page = 1
+        return [MovementHistoryState.load_movements(1)]
+
+    async def load_more_products(self):
+        if self.product_loading_more or not self.product_has_more:
+            return
+        token = await self._session_token()
+        if not token:
+            return
+        self.product_loading_more = True
+        try:
+            page = self.product_page + 1
+            response = await auth_client.list_products(token, page=page, per_page=100)
+            known = {item["id"] for item in self.product_options}
+            self.product_options.extend(
+                self._product_option(item)
+                for item in response["items"]
+                if isinstance(item, dict)
+                and item.get("id") is not None
+                and str(item["id"]) not in known
+            )
+            self.product_page = page
+            self.product_has_more = len(response["items"]) == 100
+        except XanoAuthError:
+            return rx.redirect("/")
+        except XanoError:
+            self.product_filter_error = "Não foi possível carregar mais Produtos para o filtro."
+        finally:
+            self.product_loading_more = False
+
+    def change_filter_type(self, value: str):
+        self.filter_type = value
+        self.current_page = 1
+        return [MovementHistoryState.load_movements(1)]
+
+    def clear_filters(self):
+        self.filter_type = "Todos"
+        self.filter_product_id = ""
+        self.filter_user_id = ""
+        self.product_query = ""
+        self.user_query = ""
+        self.product_options_open = False
+        self.user_options_open = False
+        self.current_page = 1
+        return [MovementHistoryState.load_movements(1)]
+
+    def load_previous_page(self):
+        if self.prev_page is None:
+            return
+        return [MovementHistoryState.load_movements(self.prev_page)]
+
+    def load_next_page(self):
+        if self.next_page is None:
+            return
+        return [MovementHistoryState.load_movements(self.next_page)]
+
+    @staticmethod
+    def _format_datetime(value: object) -> str:
+        if value is None or value == "":
+            return "—"
+        try:
+            timestamp_ms = float(value)
+            return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%d/%m/%Y %H:%M")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return "—"
+
+    @staticmethod
+    def _format_quantity(value: object) -> str:
+        try:
+            quantity = Decimal(str(value))
+            if not quantity.is_finite():
+                return "—"
+            formatted = format(quantity.normalize(), "f")
+            if "." in formatted:
+                formatted = formatted.rstrip("0").rstrip(".")
+            return formatted.replace(".", ",")
+        except (InvalidOperation, TypeError, ValueError):
+            return "—"
+
+    async def load_movements(self, page: int):
+        if self.is_loading:
+            return
+        self.is_loading = True
+        self.error_message = ""
+        self.movements = []
+        yield
+
+        token = await self._session_token()
+        if not token:
+            self.is_loading = False
+            return
+
+        tipo = {
+            "Entrada": "entrada",
+            "Saída": "saida",
+        }.get(self.filter_type)
+        try:
+            product_value = str(self.filter_product_id or "").strip()
+            user_value = str(self.filter_user_id or "").strip()
+            product_id = int(product_value) if product_value and product_value != "0" else None
+            user_id = int(user_value) if user_value and user_value != "0" else None
+            if (product_id is not None and product_id < 0) or (user_id is not None and user_id < 0):
+                raise ValueError("IDs de filtro não podem ser negativos.")
+        except (TypeError, ValueError):
+            self.error_message = "Os filtros informados são inválidos."
+            self.is_loading = False
+            return
+
+        try:
+            response = await auth_client.list_movements(
+                token,
+                page=page,
+                per_page=self.per_page,
+                tipo=tipo,
+                product_id=product_id,
+                user_id=user_id,
+            )
+            self.movements = [
+                {
+                    **{
+                        key: "" if value is None else str(value)
+                        for key, value in item.items()
+                    },
+                    "data_hora_display": self._format_datetime(item.get("data_hora")),
+                    "tipo_display": "Entrada" if item.get("tipo") == "entrada" else "Saída",
+                    "quantidade_display": self._format_quantity(item.get("quantidade")),
+                    "product_code_display": str(item.get("product_code") or "—"),
+                    "product_name_display": str(item.get("product_name") or "Produto não encontrado"),
+                    "user_name_display": str(item.get("user_name") or "Usuário não encontrado"),
+                    "supplier_name_display": str(item.get("supplier_name") or "—"),
+                    "motivo_display": str(item.get("motivo") or "—"),
+                    "observacao_display": str(item.get("observacao") or "—"),
+                }
+                for item in response["items"]
+                if isinstance(item, dict)
+            ]
+            self.current_page = int(response.get("curPage") or page)
+            self.total_items = int(response.get("itemsTotal") or 0)
+            self.total_pages = max(1, int(response.get("pageTotal") or 0))
+            self.next_page = int(response["nextPage"]) if response.get("nextPage") is not None else None
+            self.prev_page = int(response["prevPage"]) if response.get("prevPage") is not None else None
+        except XanoAuthError as exc:
+            _log_history_failure("movements", exc)
+            self.error_message = exc.message
+            yield rx.redirect("/")
+        except XanoPermissionError as exc:
+            _log_history_failure("movements", exc)
+            self.error_message = "Você não possui permissão para visualizar o histórico de movimentações."
+        except XanoRequestError as exc:
+            _log_history_failure("movements", exc)
+            if exc.error_code == "PERMISSION_DENIED":
+                self.error_message = "Você não possui permissão para visualizar o histórico de movimentações."
+            elif exc.error_code == "INVALID_INPUT":
+                self.error_message = "Os filtros informados são inválidos."
+            else:
+                self.error_message = "Não foi possível carregar o histórico de movimentações. Tente novamente."
+        except XanoConnectionError as exc:
+            _log_history_failure("movements", exc)
+            self.error_message = "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
+        except XanoError as exc:
+            _log_history_failure("movements", exc)
+            self.error_message = "Não foi possível carregar o histórico de movimentações. Tente novamente."
+        except Exception as exc:
+            _log_history_failure("movements", exc)
+            self.error_message = "Não foi possível carregar o histórico de movimentações. Tente novamente."
+        finally:
+            self.is_loading = False
+
+
+MOVEMENT_GRID_COLUMNS = "150px 80px 90px minmax(140px, 1fr) 110px minmax(140px, 1fr) 130px minmax(130px, 0.9fr) minmax(170px, 1.3fr)"
+MOVEMENT_GRID_COLUMN_GAP = "8px"
+MOVEMENT_GRID_CELL_PADDING_X = "6px"
+
+
+def _movement_row(movement: dict[str, str]) -> rx.Component:
+    return rx.box(
+        rx.grid(
+        rx.text(movement["data_hora_display"], white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        rx.cond(
+            movement["tipo"] == "entrada",
+            rx.center(rx.badge("Entrada", color_scheme="green"), padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+            rx.center(rx.badge("Saída", color_scheme="red"), padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        ),
+        rx.text(movement["product_code_display"], padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        rx.text(movement["product_name_display"], overflow="hidden", text_overflow="ellipsis", white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        rx.text(
+            movement["quantidade_display"],
+            display="flex",
+            justify_content="center",
+            align_items="center",
+            text_align="center",
+            width="100%",
+            white_space="nowrap",
+            padding_x=MOVEMENT_GRID_CELL_PADDING_X,
+        ),
+        rx.text(movement["user_name_display"], overflow="hidden", text_overflow="ellipsis", white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        rx.text(
+            movement["supplier_name_display"],
+            display="flex",
+            justify_content="center",
+            align_items="center",
+            text_align="center",
+            width="100%",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+            padding_x=MOVEMENT_GRID_CELL_PADDING_X,
+        ),
+        rx.text(movement["motivo_display"], overflow="hidden", text_overflow="ellipsis", white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        rx.text(movement["observacao_display"], overflow="hidden", text_overflow="ellipsis", white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+        columns="9",
+        width="100%",
+        column_gap=MOVEMENT_GRID_COLUMN_GAP,
+        style={"grid_template_columns": MOVEMENT_GRID_COLUMNS, "align_items": "center"},
+        padding_y="0.75rem",
+        ),
+        width="100%",
+        border_bottom="1px solid #eee",
+    )
+
+
+def _movement_table() -> rx.Component:
+    def header_cell(label: str) -> rx.Component:
+        if label in {"Quantidade", "Fornecedor"}:
+            return rx.text(
+                label,
+                weight="bold",
+                white_space="nowrap",
+                display="flex",
+                justify_content="center",
+                align_items="center",
+                text_align="center",
+                width="100%",
+                padding_x=MOVEMENT_GRID_CELL_PADDING_X,
+            )
+        return rx.text(
+            label,
+            weight="bold",
+            white_space="nowrap",
+            text_align="center" if label == "Tipo" else "left",
+            padding_x=MOVEMENT_GRID_CELL_PADDING_X,
+        )
+
+    header = rx.grid(
+        *[
+            header_cell(label)
+            for label in ["Data/Hora", "Tipo", "Código", "Produto", "Quantidade", "Usuário", "Fornecedor", "Motivo", "Observação"]
+        ],
+        columns="9",
+        width="100%",
+        column_gap=MOVEMENT_GRID_COLUMN_GAP,
+        style={"grid_template_columns": MOVEMENT_GRID_COLUMNS, "align_items": "center"},
+        padding_y="0.75rem",
+        background="#f5f5f5",
+        border_bottom="1px solid #ddd",
+    )
+    return rx.box(
+        header,
+        rx.vstack(rx.foreach(MovementHistoryState.movements, _movement_row), width="100%", spacing="0"),
+        width="100%",
+        overflow_x="auto",
+        border="1px solid #ddd",
+        border_radius="0.4rem",
+    )
+
+
 def historico() -> rx.Component:
     return page(
         "Histórico de movimentações",
         rx.vstack(
-            rx.hstack(
-                rx.select(["Todos", "Entrada", "Saída"], placeholder="Tipo"),
-                rx.input(placeholder="Produto"),
-                rx.input(type="date"),
-                rx.input(type="date"),
-                rx.button("Filtrar"),
+            rx.vstack(
+                rx.text("Filtros", weight="bold", size="4"),
+                rx.hstack(
+                rx.vstack(
+                    rx.text("Tipo"),
+                    rx.select(
+                        ["Todos", "Entrada", "Saída"],
+                        value=MovementHistoryState.filter_type,
+                        on_change=MovementHistoryState.change_filter_type,
+                    ),
+                    align="stretch",
+                    spacing="1",
+                ),
+                rx.vstack(
+                    rx.text("Usuário"),
+                    searchable_select(
+                        query=MovementHistoryState.user_query,
+                        options=MovementHistoryState.filtered_user_options,
+                        is_open=MovementHistoryState.user_options_open,
+                        on_search=MovementHistoryState.search_users,
+                        on_open=MovementHistoryState.open_user_options,
+                        on_close=MovementHistoryState.close_user_options,
+                        on_escape=MovementHistoryState.close_user_options_on_escape,
+                        on_select=MovementHistoryState.select_user_filter,
+                        has_more=MovementHistoryState.user_has_more,
+                        is_loading_more=MovementHistoryState.user_loading_more,
+                        on_load_more=MovementHistoryState.load_more_users,
+                        placeholder="Todos os usuários",
+                        empty_message="Nenhum usuário encontrado.",
+                    ),
+                    align="stretch",
+                    spacing="1",
+                    min_width="220px",
+                ),
+                rx.vstack(
+                    rx.text("Produto"),
+                    searchable_select(
+                        query=MovementHistoryState.product_query,
+                        options=MovementHistoryState.filtered_product_options,
+                        is_open=MovementHistoryState.product_options_open,
+                        on_search=MovementHistoryState.search_products,
+                        on_open=MovementHistoryState.open_product_options,
+                        on_close=MovementHistoryState.close_product_options,
+                        on_escape=MovementHistoryState.close_product_options_on_escape,
+                        on_select=MovementHistoryState.select_product_filter,
+                        has_more=MovementHistoryState.product_has_more,
+                        is_loading_more=MovementHistoryState.product_loading_more,
+                        on_load_more=MovementHistoryState.load_more_products,
+                        placeholder="Todos os produtos",
+                        empty_message="Nenhum Produto encontrado.",
+                    ),
+                    align="stretch",
+                    spacing="1",
+                    min_width="260px",
+                ),
+                rx.button("Limpar filtros", on_click=MovementHistoryState.clear_filters),
                 width="100%",
                 wrap="wrap",
+                align="end",
+                spacing="4",
+                ),
+                width="100%",
+                align="stretch",
+                spacing="2",
+            ),
+            rx.cond(
+                MovementHistoryState.product_filter_error != "",
+                rx.text(MovementHistoryState.product_filter_error, color="#b45309"),
+            ),
+            rx.cond(
+                MovementHistoryState.user_filter_error != "",
+                rx.text(MovementHistoryState.user_filter_error, color="#b45309"),
             ),
             section(
                 "Movimentações",
-                mock_table(
-                    ["ID", "Tipo", "Produto", "Qtd.", "Data/hora", "Usuário", "Motivo"],
-                    [
-                        ["MOV-104", "Entrada", "Arroz 5kg", "50", "22/09/2026 14:32", "Ana", "Compra"],
-                        ["MOV-103", "Saída", "Café 500g", "8", "22/09/2026 13:10", "Carlos", "Consumo interno"],
-                        ["MOV-102", "Entrada", "Detergente", "30", "22/09/2026 11:45", "Ana", "Compra"],
-                        ["MOV-101", "Saída", "Papel A4", "5", "22/09/2026 09:20", "Carlos", "Uso administrativo"],
-                    ],
+                rx.cond(
+                    MovementHistoryState.is_loading,
+                    rx.center(rx.spinner(), rx.text("Carregando histórico..."), width="100%", padding="2rem"),
+                    rx.cond(
+                        MovementHistoryState.error_message != "",
+                        rx.text(MovementHistoryState.error_message, color="#b91c1c"),
+                        rx.cond(
+                            MovementHistoryState.movements.length() > 0,
+                            _movement_table(),
+                            rx.text("Nenhuma movimentação encontrada.", color="#64748b", padding="1rem"),
+                        ),
+                    ),
                 ),
             ),
+            rx.hstack(
+                rx.button(
+                    "Anterior",
+                    on_click=MovementHistoryState.load_previous_page,
+                    disabled=MovementHistoryState.prev_page == None,
+                    variant="soft",
+                ),
+                rx.text(
+                    "Página ",
+                    MovementHistoryState.current_page,
+                    " de ",
+                    MovementHistoryState.total_pages,
+                    " · ",
+                    MovementHistoryState.total_items,
+                    " movimentações",
+                ),
+                rx.button(
+                    "Próxima",
+                    on_click=MovementHistoryState.load_next_page,
+                    disabled=MovementHistoryState.next_page == None,
+                    variant="soft",
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+            ),
+            width="100%",
+            align="stretch",
+            spacing="4",
         ),
     )
 

@@ -31,3 +31,7 @@ A tela de Entrada ainda usa opções fixas e não identifica Produtos nem Fornec
 ## Aditamento de escopo: Saída de estoque
 
 Esta mudança também integra /movimentacoes/saidas ao endpoint já publicado POST /api:estoque/exits. A Saída usa ExitState separado, pesquisa Produto real por seletor ou código lido, mostra o saldo de GET /stock, valida a quantidade contra o saldo, envia data_hora e observacao apenas quando preenchidos e nunca envia user_id ou supplier_id. As seções anteriores que diziam que a Saída ficaria fora do escopo são substituídas por este aditamento. O backend Xano e o fluxo de Entrada permanecem fora das alterações funcionais desta integração.
+
+## Aditamento de escopo: consulta do Histórico
+
+Esta mudança também integra a rota /movimentacoes ao GET /api:estoque/movements. A tela exibe as movimentações reais em páginas de 20 itens, combina filtros de tipo e Produto e apresenta os dados relacionados que o backend já retorna. A pesquisa de Produto é local às opções carregadas; nenhuma consulta é feita por caractere ou por movimentação. Este escopo é somente de leitura e não altera os fluxos de Entrada e Saída nem o backend Xano.

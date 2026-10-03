@@ -144,3 +144,56 @@ A interface MUST bloquear Saída sem saldo, com saldo zero ou com quantidade mai
 
 - WHEN data/hora é informada
 - THEN Reflex encaminha o valor escolhido sem ajuste de fuso arbitrário
+
+### Requirement: Histórico deve consultar movimentações reais do backend
+
+A rota /movimentacoes MUST validar a sessão pelo fluxo AuthState existente e carregar movimentos pela chamada autenticada GET /api:estoque/movements. O client MUST enviar page e per_page=20 e incluir tipo e product_id somente quando seus filtros estiverem selecionados. Os filtros MUST ser combináveis, reiniciar a consulta na página 1 quando alterados e provocar nova consulta ao backend. A tela MUST preservar filtros ao mudar de página.
+
+O Histórico MUST exibir Data/Hora, Tipo, Código, Produto, Quantidade, Usuário, Fornecedor, Motivo e Observação usando os campos enriquecidos que o endpoint retorna. MUST NOT fazer chamadas por linha para obter Produto, Usuário ou Fornecedor. MUST preservar a ordenação recebida do backend. Tipo entrada/saida MUST ser apresentado como Entrada/Saída sem alterar o valor original armazenado. Timestamp epoch em milissegundos MUST ser apresentado em formato pt-BR legível e não como número bruto. Quantidade MUST manter seu sinal e precisão, aplicando vírgula como separador decimal quando necessário.
+
+O filtro por tipo MUST oferecer Todos, Entrada e Saída, mapeando Todos para omissão e as demais opções para entrada/saida. O filtro por Produto MUST armazenar o ID real, exibir código e nome e usar busca local case-insensitive/accent-insensitive nas opções carregadas; digitar MUST NOT consultar o Xano por caractere. O Produto selecionado MUST ser enviado como product_id.
+
+A página MUST usar paginação real e exibir controles Anterior/Próxima desabilitados nos limites. Enquanto carrega, MUST mostrar indicador e evitar mostrar a página anterior como resultado do filtro novo. Sem itens, MUST mostrar mensagem de estado vazio. Produto ou Usuário sem nome e Fornecedor/Observação nulos MUST receber fallbacks legíveis, sem exibir None/null.
+
+Erros 401 MUST seguir o fluxo de sessão/login; HTTP 403 ou PERMISSION_DENIED MUST informar falta de permissão para visualizar o histórico; INVALID_INPUT MUST indicar filtros inválidos; erros de conexão ou desconhecidos MUST exibir mensagem amigável sem traceback. A tela é somente de leitura e MUST NOT alterar Entrada, Saída ou backend.
+
+#### Scenario: Abrir ou retornar ao Histórico
+
+- **WHEN** usuário autenticado abre /movimentacoes
+- **THEN** a aplicação valida a sessão e consulta a página atual com os filtros preservados, incluindo movimentos gravados desde a visita anterior
+
+#### Scenario: Combinar filtros de tipo e Produto
+
+- **WHEN** usuário escolhe Saída e um Produto
+- **THEN** a tela consulta a página 1 de GET /movements com tipo=saida e o product_id real selecionado
+
+#### Scenario: Paginar com filtros ativos
+
+- **WHEN** usuário avança ou retorna uma página
+- **THEN** o frontend envia a página indicada pelo backend e mantém tipo e product_id
+
+#### Scenario: Buscar Produto para o filtro
+
+- **WHEN** usuário digita trecho de código ou nome no seletor de Produto
+- **THEN** as opções carregadas são filtradas localmente sem chamada ao Xano por caractere
+
+#### Scenario: Mostrar carregamento e estado vazio
+
+- **WHEN** a página está sendo consultada ou não contém movimentações
+- **THEN** a tela mostra indicador de carregamento ou mensagem de histórico vazio, respectivamente
+
+### Requirement: Histórico deve filtrar por usuário e alinhar suas colunas
+
+A área de filtros MUST ser agrupada sob o rótulo Filtros e conter Tipo, Usuário, Produto e Limpar filtros, quebrando em telas estreitas. O seletor de Usuário MUST usar a listagem paginada segura do backend, exibir o nome e armazenar o ID. Ao selecionar usuário, o frontend MUST reiniciar na página 1 e enviar `user_id`, combinado com os demais filtros selecionados. Limpar filtros MUST limpar tipo, usuário e Produto e recarregar a primeira página sem filtros.
+
+O cabeçalho e cada linha da tabela MUST usar a mesma estrutura de colunas e larguras para manter alinhamento. Quantidade MUST ocupar coluna própria de largura mínima suficiente e Usuário MUST começar na coluna seguinte, sem encostar ou concatenar visualmente. Tipo MUST ser centralizado, Quantidade alinhada à direita e as demais colunas à esquerda. Overflow horizontal MUST ser usado quando necessário em telas menores.
+
+#### Scenario: Filtrar histórico por usuário
+
+- **WHEN** o usuário seleciona uma pessoa e mantém outros filtros ativos
+- **THEN** a página 1 é recarregada com `user_id` combinado a tipo e/ou `product_id`
+
+#### Scenario: Limpar todos os filtros
+
+- **WHEN** o usuário ativa Limpar filtros
+- **THEN** tipo, usuário e Produto voltam ao padrão e todas as movimentações são recarregadas desde a página 1
