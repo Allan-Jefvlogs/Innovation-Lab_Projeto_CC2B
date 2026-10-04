@@ -6,6 +6,9 @@ query "movements" verb=GET {
     text tipo?
     int? product_id? filters=min:1
     int? user_id? filters=min:1
+    timestamp? date_from?
+    timestamp? date_to?
+    int? supplier_id? filters=min:1
     int page?=1 filters=min:1
     int per_page?=20 filters=min:1|max:100
   }
@@ -16,6 +19,11 @@ query "movements" verb=GET {
     } as $authorization
 
     precondition ($input.tipo == null || $input.tipo == "entrada" || $input.tipo == "saida") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
+
+    precondition ($input.date_from == null || $input.date_to == null || $input.date_from <= $input.date_to) {
       error_type = "inputerror"
       error = "INVALID_INPUT"
     }
@@ -44,7 +52,7 @@ query "movements" verb=GET {
         user_name: $db.user.name,
         supplier_name: $db.supplier.nome_razao_social
       }
-      where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id
+      where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id && ($input.date_from == null || $db.inventory_movement.data_hora >= $input.date_from) && ($input.date_to == null || $db.inventory_movement.data_hora <= $input.date_to) && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
       sort = {
         data_hora: "desc"
         id: "desc"
