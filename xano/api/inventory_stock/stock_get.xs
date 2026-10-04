@@ -3,6 +3,8 @@ query "stock" verb=GET {
   auth = "user"
 
   input {
+    text? situacao?
+    text? search?
     int page?=1 filters=min:1
     int per_page?=20 filters=min:1|max:100
   }
@@ -11,6 +13,11 @@ query "stock" verb=GET {
     function.run "Inventory/authorize_permission" {
       input = {user_id: $auth.id, permission_code: "stock.read"}
     } as $authorization
+
+    precondition ($input.situacao == null || $input.situacao == "normal" || $input.situacao == "abaixo_minimo" || $input.situacao == "sem_estoque") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
 
     db.query inventory_stock {
       join = {
@@ -25,6 +32,7 @@ query "stock" verb=GET {
         nome: $db.product.nome,
         estoque_minimo: $db.product.estoque_minimo
       }
+      where = ($input.situacao == null || ($input.situacao == "sem_estoque" && $db.inventory_stock.quantidade_disponivel == 0) || ($input.situacao == "abaixo_minimo" && $db.inventory_stock.quantidade_disponivel > 0 && $db.inventory_stock.quantidade_disponivel < $db.product.estoque_minimo) || ($input.situacao == "normal" && $db.inventory_stock.quantidade_disponivel > 0 && $db.inventory_stock.quantidade_disponivel >= $db.product.estoque_minimo)) && ($input.search == null || $input.search == "" || $db.product.codigo includes $input.search || $db.product.nome includes $input.search)
       sort = {product_id: "asc"}
       return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
     } as $stock_page

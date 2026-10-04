@@ -187,49 +187,66 @@ class ProductsState(rx.State):
 
     def search_categories(self, value: str):
         self.category_search_query = value
-        self.category_selection = ""
         self.category_dropdown_open = True
         self.supplier_dropdown_open = False
 
     def search_suppliers(self, value: str):
         self.supplier_search_query = value
-        self.supplier_selection = ""
         self.supplier_dropdown_open = True
         self.category_dropdown_open = False
 
     def open_category_options(self):
         self.category_dropdown_open = True
         self.supplier_dropdown_open = False
+        self.category_search_query = ""
 
     def close_category_options(self, value: str = ""):
         self.category_dropdown_open = False
+        selected = next(
+            (item for item in self.category_options if item["id"] == str(self.category_selection)),
+            None,
+        )
+        if selected is not None:
+            self.category_search_query = selected["label"]
 
     def close_category_options_on_escape(self, key: str, modifiers: dict | None = None):
         if key == "Escape":
-            self.category_dropdown_open = False
+            self.close_category_options()
 
     def open_supplier_options(self):
         self.supplier_dropdown_open = True
         self.category_dropdown_open = False
+        self.supplier_search_query = ""
 
     def close_supplier_options(self, value: str = ""):
         self.supplier_dropdown_open = False
+        if self.supplier_selection == "none":
+            self.supplier_search_query = "Sem fornecedor padrão"
+            return
+        selected = next(
+            (item for item in self.supplier_options if item["id"] == str(self.supplier_selection)),
+            None,
+        )
+        if selected is not None:
+            self.supplier_search_query = selected["label"]
 
     def close_supplier_options_on_escape(self, key: str, modifiers: dict | None = None):
         if key == "Escape":
-            self.supplier_dropdown_open = False
+            self.close_supplier_options()
 
     def select_category(self, category_id: str):
-        option = next((item for item in self.category_options if item["id"] == category_id), None)
+        selected_id = str(category_id)
+        option = next((item for item in self.category_options if item["id"] == selected_id), None)
         if option and option.get("disabled") != "true":
-            self.category_selection = category_id
+            self.category_selection = selected_id
             self.category_search_query = option["label"]
             self.category_dropdown_open = False
 
     def select_supplier(self, supplier_id: str):
-        option = next((item for item in self.supplier_options if item["id"] == supplier_id), None)
+        selected_id = str(supplier_id)
+        option = next((item for item in self.supplier_options if item["id"] == selected_id), None)
         if option and option.get("disabled") != "true":
-            self.supplier_selection = supplier_id
+            self.supplier_selection = selected_id
             self.supplier_search_query = option["label"]
             self.supplier_dropdown_open = False
 
@@ -498,13 +515,13 @@ class ProductsState(rx.State):
         if not self.codigo.strip() or not self.nome.strip() or category_id is None or self.unidade_medida not in PRODUCT_UNIT_CODES or minimum is None:
             self.error_message = "Preencha código, nome, categoria, unidade de medida e estoque mínimo válido (maior ou igual a zero)."
             return
-        active_supplier_ids = {
+        available_supplier_ids = {
             option["id"]
             for option in self.supplier_options
             if option.get("id") != "none" and option.get("disabled") == "false"
         }
-        if self.supplier_selection != "none" and self.supplier_selection not in active_supplier_ids:
-            self.error_message = "Selecione um fornecedor ativo ou Sem fornecedor padrão."
+        if self.supplier_selection != "none" and self.supplier_selection not in available_supplier_ids:
+            self.error_message = "Selecione um fornecedor disponível ou Sem fornecedor padrão."
             return
 
         payload = {
@@ -531,8 +548,8 @@ class ProductsState(rx.State):
                 )
             elif exc.error_code == "BUSINESS_RULE_VIOLATION":
                 self.error_message = (
-                    "A Categoria ou o Fornecedor padrão selecionado não existe ou está inativo. "
-                    "Revise as associações e selecione registros ativos."
+                    "A Categoria ou o Fornecedor padrão selecionado não foi aceito. "
+                    "Revise as associações informadas."
                 )
             elif exc.error_code in {
                 "INVALID_INPUT", "INPUT_ERROR", "INPUTERROR", "VALIDATION_ERROR"
@@ -682,13 +699,13 @@ class ProductsState(rx.State):
             if original_supplier_id:
                 payload["limpar_fornecedor_padrao"] = True
         elif self.supplier_selection != original_supplier_id:
-            active_supplier_ids = {
+            available_supplier_ids = {
                 option["id"]
                 for option in self.supplier_options
                 if option.get("id") != "none" and option.get("disabled") == "false"
             }
-            if self.supplier_selection not in active_supplier_ids:
-                self.error_message = "Selecione um fornecedor ativo ou Sem fornecedor padrão."
+            if self.supplier_selection not in available_supplier_ids:
+                self.error_message = "Selecione um fornecedor disponível ou Sem fornecedor padrão."
                 return
             payload["fornecedor_padrao_id"] = int(self.supplier_selection)
         try:
@@ -773,106 +790,48 @@ def _parse_minimum(value: str) -> float | None:
         return None
 
 
+PRODUCT_GRID = "1fr 1.8fr 1.5fr 0.8fr 0.8fr 0.8fr 0.8fr"
+
+
 def _product_row(product: dict[str, str]) -> rx.Component:
-    return rx.hstack(
-        rx.text(product["codigo"], flex="1", min_width="120px"),
-        rx.text(product["nome"], flex="1.5", min_width="180px"),
-        rx.text(product["categoria"], flex="1.5", min_width="180px"),
-        rx.text(product["unidade_medida"], flex="1", min_width="120px"),
-        rx.text(
-            product["quantidade_disponivel"],
-            width="88px",
-            min_width="88px",
-            flex_shrink="0",
-            text_align="center",
-        ),
-        rx.text(
-            product["estoque_minimo"],
-            width="100px",
-            min_width="100px",
-            flex_shrink="0",
-            text_align="center",
-        ),
-        rx.text(
-            product["status"],
-            width="100px",
-            min_width="100px",
-            flex_shrink="0",
-            text_align="center",
-        ),
-        rx.text(
-            product["situacao_estoque"],
-            width="190px",
-            min_width="190px",
-            flex_shrink="0",
-            text_align="center",
-            white_space="nowrap",
-        ),
+    return rx.grid(
+        rx.text(product["codigo"], padding_x="12px"),
+        rx.text(product["nome"], padding_x="12px"),
+        rx.text(product["categoria"], padding_x="12px"),
+        rx.text(product["unidade_medida"], padding_x="12px", text_align="center"),
+        rx.text(product["estoque_minimo"], padding_x="12px", text_align="center"),
+        rx.text(product["status"], padding_x="12px", text_align="center"),
         rx.center(
             rx.cond(
                 ProductsState.can_manage_products,
                 rx.link("Editar", href=f"/produtos/{product['id']}/editar"),
                 rx.text("—"),
             ),
-            width="96px",
-            min_width="96px",
-            flex_shrink="0",
+            padding_x="12px",
         ),
+        columns="7",
         width="100%",
+        column_gap="4px",
+        style={"grid_template_columns": PRODUCT_GRID, "align_items": "center"},
         padding="0.75rem",
         border_bottom="1px solid #eee",
     )
 
 
 def _products_table() -> rx.Component:
-    headers = ["Código", "Nome", "Categoria", "Unidade", "Qtd.", "Mínimo", "Status", "Situação do estoque", "Ações"]
-    header = rx.hstack(
-        rx.text(headers[0], weight="bold", flex="1", min_width="120px"),
-        rx.text(headers[1], weight="bold", flex="1.5", min_width="180px"),
-        rx.text(headers[2], weight="bold", flex="1.5", min_width="180px"),
-        rx.text(headers[3], weight="bold", flex="1", min_width="120px"),
-        rx.text(
-            headers[4],
-            weight="bold",
-            width="88px",
-            min_width="88px",
-            flex_shrink="0",
-            text_align="center",
-        ),
-        rx.text(
-            headers[5],
-            weight="bold",
-            width="100px",
-            min_width="100px",
-            flex_shrink="0",
-            text_align="center",
-        ),
-        rx.text(
-            headers[6],
-            weight="bold",
-            width="100px",
-            min_width="100px",
-            flex_shrink="0",
-            text_align="center",
-        ),
-        rx.text(
-            headers[7],
-            weight="bold",
-            width="190px",
-            min_width="190px",
-            flex_shrink="0",
-            text_align="center",
-            white_space="nowrap",
-        ),
-        rx.text(
-            headers[8],
-            weight="bold",
-            width="96px",
-            min_width="96px",
-            flex_shrink="0",
-            text_align="center",
-        ),
+    headers = ["Código", "Nome", "Categoria", "Unidade", "Mínimo", "Status", "Ações"]
+    header = rx.grid(
+        rx.text(headers[0], weight="bold", padding_x="12px"),
+        rx.text(headers[1], weight="bold", padding_x="12px"),
+        rx.text(headers[2], weight="bold", padding_x="12px"),
+        rx.text(headers[3], weight="bold", padding_x="12px", text_align="center"),
+        rx.text(headers[4], weight="bold", padding_x="12px", text_align="center"),
+        rx.text(headers[5], weight="bold", padding_x="12px", text_align="center"),
+        rx.text(headers[6], weight="bold", padding_x="12px", text_align="center"),
+        columns="7",
         width="100%",
+        column_gap="4px",
+        style={"grid_template_columns": PRODUCT_GRID, "align_items": "center"},
         padding="0.75rem",
         background="#f5f5f5",
         border_bottom="1px solid #ddd",

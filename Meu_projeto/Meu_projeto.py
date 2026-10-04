@@ -5,7 +5,7 @@ from .pages.dashboard import dashboard
 from .pages.produtos import ProductsState, produtos, novo_produto, editar_produto
 from .pages.categorias import CategoryState, categorias
 from .pages.fornecedores import SupplierState, fornecedores
-from .pages.estoque import estoque
+from .pages.estoque import StockState, estoque
 from .pages.movimentacoes import EntryState, ExitState, MovementHistoryState, historico, entrada, saida
 from .pages.usuarios import usuarios
 from .pages.perfis import perfis
@@ -25,7 +25,7 @@ app.add_page(produtos, route="/produtos", title="Produtos | NexStock", on_load=P
 app.add_page(novo_produto, route="/produtos/novo", title="Novo produto | NexStock", on_load=ProductsState.load_create_page)
 app.add_page(categorias, route="/categorias", title="Categorias | NexStock", on_load=CategoryState.load_page)
 app.add_page(fornecedores, route="/fornecedores", title="Fornecedores | NexStock", on_load=SupplierState.load_page)
-app.add_page(estoque, route="/estoque", title="Estoque | NexStock", on_load=AuthState.require_auth)
+app.add_page(estoque, route="/estoque", title="Estoque | NexStock", on_load=StockState.load_page)
 app.add_page(historico, route="/movimentacoes", title="Histórico | NexStock", on_load=MovementHistoryState.load_page)
 app.add_page(entrada, route="/movimentacoes/entradas", title="Entrada | NexStock", on_load=EntryState.load_entry_page)
 app.add_page(saida, route="/movimentacoes/saidas", title="Saída | NexStock", on_load=ExitState.load_exit_page)

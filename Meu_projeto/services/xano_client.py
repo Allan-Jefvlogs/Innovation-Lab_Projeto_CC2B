@@ -426,19 +426,48 @@ class XanoAuthClient:
         )
 
     async def list_stock(
-        self, auth_token: str, page: int = 1, per_page: int = 100
+        self,
+        auth_token: str,
+        page: int = 1,
+        per_page: int = 100,
+        situacao: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Consulta uma página autenticada dos saldos oficiais de estoque."""
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if situacao in {"normal", "abaixo_minimo", "sem_estoque"}:
+            params["situacao"] = situacao
+        if search and search.strip():
+            params["search"] = search.strip()
+        logger.info("Stock request params: %r", params)
         data = await self._inventory_request(
             "GET",
             "/stock",
             auth_token,
-            params={"page": page, "per_page": per_page},
+            params=params,
             group_url=self.stock_group_url,
         )
         if not isinstance(data.get("items"), list):
             raise XanoServerError("O Xano retornou saldos de estoque em formato inesperado.")
         return data
+
+    async def get_stock_summary(self, auth_token: str) -> Dict[str, int]:
+        """Consulta os totais de produtos monitorados e por situaÃ§Ã£o."""
+        data = await self._inventory_request(
+            "GET",
+            "/stock_summary",
+            auth_token,
+            group_url=self.stock_group_url,
+        )
+        try:
+            return {
+                "total": int(data["total"]),
+                "normal": int(data["normal"]),
+                "abaixo_minimo": int(data["abaixo_minimo"]),
+                "sem_estoque": int(data["sem_estoque"]),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise XanoServerError("O Xano retornou um resumo de estoque em formato inesperado.") from exc
 
     async def list_movements(
         self,

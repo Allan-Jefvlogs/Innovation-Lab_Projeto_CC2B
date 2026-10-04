@@ -34,6 +34,7 @@ def searchable_select(
         return rx.button(
             option["label"],
             on_click=on_select(option["id"]),
+            on_mouse_down=rx.prevent_default,
             disabled=option.get("disabled", "false") == "true",
             variant="ghost",
             width="100%",
