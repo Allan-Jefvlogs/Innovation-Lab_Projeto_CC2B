@@ -530,11 +530,14 @@ class XanoAuthClient:
         *,
         date_from: Optional[int] = None,
         date_to: Optional[int] = None,
+        tipo: Optional[str] = None,
         product_id: Optional[int] = None,
         supplier_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Consulta o resumo completo do conjunto filtrado de movimentaÃ§Ãµes."""
         params: Dict[str, Any] = {}
+        if tipo in {"entrada", "saida"}:
+            params["tipo"] = tipo
         for name, value in (
             ("product_id", product_id),
             ("supplier_id", supplier_id),

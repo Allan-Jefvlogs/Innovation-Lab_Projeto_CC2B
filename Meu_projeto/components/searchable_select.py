@@ -26,6 +26,7 @@ def searchable_select(
     is_loading_more: rx.Var[bool] | bool = False,
     on_load_more: Any = None,
     placeholder: str,
+    placeholder_color: str | None = None,
     empty_message: str = "Nenhuma opção encontrada.",
 ) -> rx.Component:
     """Combobox simples com filtro local e carregamento explícito de páginas."""
@@ -67,6 +68,7 @@ def searchable_select(
             on_blur=on_close.debounce(150),
             on_key_down=on_escape,
             placeholder=placeholder,
+            color=(rx.cond(query == "", placeholder_color, "#111827") if placeholder_color else None),
             auto_complete=False,
             role="combobox",
             aria_expanded=is_open,

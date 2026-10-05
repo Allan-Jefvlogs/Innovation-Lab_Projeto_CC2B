@@ -28,37 +28,68 @@ query "movements" verb=GET {
       error = "INVALID_INPUT"
     }
 
-    db.query inventory_movement {
-      join = {
-        product: {
-          table: "product",
-          type: "left",
-          where: $db.inventory_movement.product_id == $db.product.id
-        },
-        user: {
-          table: "user",
-          type: "left",
-          where: $db.inventory_movement.user_id == $db.user.id
-        },
-        supplier: {
-          table: "supplier",
-          type: "left",
-          where: $db.inventory_movement.supplier_id == $db.supplier.id
+    conditional {
+      if ($input.date_from != null && $input.date_to != null) {
+        db.query inventory_movement {
+          join = {
+            product: {table: "product", type: "left", where: $db.inventory_movement.product_id == $db.product.id},
+            user: {table: "user", type: "left", where: $db.inventory_movement.user_id == $db.user.id},
+            supplier: {table: "supplier", type: "left", where: $db.inventory_movement.supplier_id == $db.supplier.id}
+          }
+          eval = {product_code: $db.product.codigo, product_name: $db.product.nome, user_name: $db.user.name, supplier_name: $db.supplier.nome_razao_social}
+          where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id && $db.inventory_movement.data_hora >= $input.date_from && $db.inventory_movement.data_hora <= $input.date_to && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+          sort = {data_hora: "desc", id: "desc"}
+          return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
+        } as $movement_page
+      }
+      else {
+        conditional {
+          if ($input.date_from != null) {
+            db.query inventory_movement {
+          join = {
+            product: {table: "product", type: "left", where: $db.inventory_movement.product_id == $db.product.id},
+            user: {table: "user", type: "left", where: $db.inventory_movement.user_id == $db.user.id},
+            supplier: {table: "supplier", type: "left", where: $db.inventory_movement.supplier_id == $db.supplier.id}
+          }
+          eval = {product_code: $db.product.codigo, product_name: $db.product.nome, user_name: $db.user.name, supplier_name: $db.supplier.nome_razao_social}
+          where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id && $db.inventory_movement.data_hora >= $input.date_from && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+          sort = {data_hora: "desc", id: "desc"}
+          return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
+            } as $movement_page
+          }
+          else {
+            conditional {
+              if ($input.date_to != null) {
+                db.query inventory_movement {
+          join = {
+            product: {table: "product", type: "left", where: $db.inventory_movement.product_id == $db.product.id},
+            user: {table: "user", type: "left", where: $db.inventory_movement.user_id == $db.user.id},
+            supplier: {table: "supplier", type: "left", where: $db.inventory_movement.supplier_id == $db.supplier.id}
+          }
+          eval = {product_code: $db.product.codigo, product_name: $db.product.nome, user_name: $db.user.name, supplier_name: $db.supplier.nome_razao_social}
+          where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id && $db.inventory_movement.data_hora <= $input.date_to && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+          sort = {data_hora: "desc", id: "desc"}
+          return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
+                } as $movement_page
+              }
+              else {
+                db.query inventory_movement {
+          join = {
+            product: {table: "product", type: "left", where: $db.inventory_movement.product_id == $db.product.id},
+            user: {table: "user", type: "left", where: $db.inventory_movement.user_id == $db.user.id},
+            supplier: {table: "supplier", type: "left", where: $db.inventory_movement.supplier_id == $db.supplier.id}
+          }
+          eval = {product_code: $db.product.codigo, product_name: $db.product.nome, user_name: $db.user.name, supplier_name: $db.supplier.nome_razao_social}
+          where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+          sort = {data_hora: "desc", id: "desc"}
+          return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
+                } as $movement_page
+              }
+            }
+          }
         }
       }
-      eval = {
-        product_code: $db.product.codigo,
-        product_name: $db.product.nome,
-        user_name: $db.user.name,
-        supplier_name: $db.supplier.nome_razao_social
-      }
-      where = $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.user_id ==? $input.user_id && ($input.date_from == null || $db.inventory_movement.data_hora >= $input.date_from) && ($input.date_to == null || $db.inventory_movement.data_hora <= $input.date_to) && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
-      sort = {
-        data_hora: "desc"
-        id: "desc"
-      }
-      return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
-    } as $movement_page
+    }
 
     var $items {
       value = []

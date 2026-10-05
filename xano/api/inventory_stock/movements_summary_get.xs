@@ -4,6 +4,7 @@ query "movements_summary" verb=GET {
 
   input {
     int? product_id? filters=min:1
+    text? tipo?
     timestamp? date_from?
     timestamp? date_to?
     int? supplier_id? filters=min:1
@@ -19,11 +20,49 @@ query "movements_summary" verb=GET {
       error = "INVALID_INPUT"
     }
 
-    db.query inventory_movement {
-      where = $db.inventory_movement.product_id ==? $input.product_id && ($input.date_from == null || $db.inventory_movement.data_hora >= $input.date_from) && ($input.date_to == null || $db.inventory_movement.data_hora <= $input.date_to) && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
-      return = {type: "list"}
-      output = ["tipo", "quantidade"]
-    } as $filtered_movements
+    precondition ($input.tipo == null || $input.tipo == "entrada" || $input.tipo == "saida") {
+      error_type = "inputerror"
+      error = "INVALID_INPUT"
+    }
+
+    conditional {
+      if ($input.date_from != null && $input.date_to != null) {
+        db.query inventory_movement {
+          where = $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.data_hora >= $input.date_from && $db.inventory_movement.data_hora <= $input.date_to && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+          return = {type: "list"}
+          output = ["tipo", "quantidade"]
+        } as $filtered_movements
+      }
+      else {
+        conditional {
+          if ($input.date_from != null) {
+            db.query inventory_movement {
+              where = $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.data_hora >= $input.date_from && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+              return = {type: "list"}
+              output = ["tipo", "quantidade"]
+            } as $filtered_movements
+          }
+          else {
+            conditional {
+              if ($input.date_to != null) {
+                db.query inventory_movement {
+                  where = $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.tipo ==? $input.tipo && $db.inventory_movement.data_hora <= $input.date_to && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+                  return = {type: "list"}
+                  output = ["tipo", "quantidade"]
+                } as $filtered_movements
+              }
+              else {
+                db.query inventory_movement {
+                  where = $db.inventory_movement.product_id ==? $input.product_id && $db.inventory_movement.tipo ==? $input.tipo && ($input.supplier_id == null || $db.inventory_movement.supplier_id == $input.supplier_id)
+                  return = {type: "list"}
+                  output = ["tipo", "quantidade"]
+                } as $filtered_movements
+              }
+            }
+          }
+        }
+      }
+    }
 
     var $total_movimentacoes {
       value = 0

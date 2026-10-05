@@ -2,38 +2,22 @@
 
 ## Problema
 
-A rota `/relatorios` ainda apresenta conteúdo estático do protótipo e não permite analisar movimentações registradas nem a situação atual do estoque.
+A tela `/relatorios` precisa manter a leitura operacional real e tornar os filtros, indicadores e exportações coerentes entre si.
 
 ## Objetivo
 
-Integrar a página a dados reais do Xano, permitindo combinar período, tipo, Produto e Fornecedor, exibir totais corretos e consultar as movimentações em páginas.
+Aplicar filtros de data, tipo, Produto e Fornecedor à tabela e aos indicadores, apresentar somente Movimentações/Entradas/Saídas e exportar todos os registros filtrados para PDF e XLSX.
 
 ## Escopo
 
-- Criar `ReportState` isolado para filtros, opções, indicadores, paginação, carregamento e erros.
-- Reutilizar autenticação, `GET /products`, `GET /suppliers`, `GET /stock_summary` e `GET /movements`.
-- Acrescentar ao `GET /movements` filtros opcionais de período e Fornecedor.
-- Criar `GET /movements_summary` protegido por `stock.read` para totais do conjunto filtrado, sem limitar os totais à página visível.
-- Substituir mocks por filtros, cards e tabela paginada de dados reais.
-- Registrar requisitos e cenários verificáveis nesta change.
+- Preservar a implementação existente de `ReportState` e `XanoClient`.
+- Distinguir filtros editados de filtros aplicados.
+- Incluir `tipo` no resumo de movimentações.
+- Exportar em memória, percorrendo a paginação do endpoint.
+- Documentar layout, filtros, indicadores, erros e exportação.
 
 ## Fora do escopo
 
-- Exportação PDF, Excel ou CSV.
-- Escritas de movimentação, alteração de estoque ou mudanças de grants.
-- Alterações em Entrada, Saída ou Histórico.
-- Publicação Xano ou Git.
-
-## Dependências e limites
-
-- `GET /movements` já fornece dados relacionados por joins e suporta `tipo`, `product_id` e paginação.
-- O resumo de movimentos precisa considerar todo o conjunto filtrado, independente da página da tabela.
-- Os indicadores de abaixo do mínimo e sem estoque descrevem a situação atual e reutilizam `GET /stock_summary`.
-- A autorização do backend permanece em `stock.read`; a interface não substitui essa autorização.
-
-## Impactos esperados
-
-- Tela `/relatorios` passa de placeholder para relatório real.
-- `movements_get.xs` recebe filtros temporais e de Fornecedor.
-- Um endpoint de leitura de resumo de movimentações será acrescentado.
-- Alterações Xano serão preparadas e validadas localmente; nenhuma publicação faz parte desta change.
+- Publicação Xano, Git commit ou push.
+- Escritas de estoque/movimentação e alterações nos módulos de cadastro.
+- Exportação CSV.

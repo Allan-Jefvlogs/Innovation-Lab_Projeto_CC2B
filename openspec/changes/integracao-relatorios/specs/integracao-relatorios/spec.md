@@ -4,12 +4,12 @@
 
 ### Requirement: Filtrar relatório operacional
 
-A rota `/relatorios` MUST permitir filtros opcionais de data inicial, data final, tipo, Produto e Fornecedor e MUST combiná-los na listagem detalhada. Datas ausentes MUST permanecer ausentes, sem período padrão oculto. A data inicial MUST representar o início do dia e a final o fim do dia no fuso `America/Sao_Paulo`. Uma data inicial posterior à final MUST ser rejeitada antes da requisição.
+A rota `/relatorios` MUST permitir filtros opcionais de data inicial, data final, tipo, Produto e Fornecedor, combinados na listagem detalhada. Datas ausentes MUST permanecer ausentes, sem período padrão oculto. A data inicial MUST representar o início do dia e a final o fim do dia no fuso `America/Sao_Paulo`. Uma data inicial posterior à final MUST ser rejeitada antes da requisição. Os filtros editáveis somente são aplicados ao acionar Aplicar filtros.
 
 #### Scenario: Aplicar filtros combinados
 
-- **WHEN** o usuário aplicar período, tipo, Produto e Fornecedor
-- **THEN** a tabela mostra somente movimentações que atendem a todos os filtros informados
+- **WHEN** o usuário aplica período, tipo, Produto e Fornecedor
+- **THEN** tabela e indicadores mostram somente movimentações que atendem a todos os filtros
 - **AND** a tabela retorna à primeira página.
 
 #### Scenario: Omitir período
@@ -19,7 +19,13 @@ A rota `/relatorios` MUST permitir filtros opcionais de data inicial, data final
 
 ### Requirement: Exibir indicadores corretos
 
-Os cards MUST mostrar total de registros de movimentação, soma da quantidade de entradas, soma da quantidade de saídas, contagem atual de produtos abaixo do mínimo e contagem atual de produtos sem estoque. Totais de movimento MUST considerar todo o conjunto dos filtros temporais, Produto e Fornecedor e MUST NOT depender da página da tabela. O filtro de tipo MUST afetar a tabela, mas não remover uma das duas somas dos cards. Situação do estoque MUST vir de `GET /stock_summary`.
+A tela MUST mostrar somente os cards não clicáveis Movimentações, Entradas e Saídas. Movimentações conta registros; Entradas e Saídas somam quantidades. Todos refletem o mesmo conjunto filtrado aplicado à tabela, incluindo datas, tipo, Produto e Fornecedor, e não dependem da página atual.
+
+#### Scenario: Filtrar por um tipo
+
+- **WHEN** o filtro Tipo for Entrada ou Saída
+- **THEN** tabela e indicadores consideram somente esse tipo
+- **AND** a soma do tipo oposto é zero.
 
 #### Scenario: Paginar tabela sem alterar totais
 
@@ -29,7 +35,7 @@ Os cards MUST mostrar total de registros de movimentação, soma da quantidade d
 #### Scenario: Fornecedor limita agregado
 
 - **WHEN** um Fornecedor for selecionado
-- **THEN** tabela e totais de movimento incluem somente registros com o `supplier_id` selecionado.
+- **THEN** tabela e totais incluem somente registros com o `supplier_id` selecionado.
 
 ### Requirement: Exibir movimentos reais paginados
 
@@ -42,27 +48,27 @@ A tabela MUST usar os dados enriquecidos de `GET /movements`, manter paginação
 
 ### Requirement: Resumo de movimentações autorizado
 
-O Xano MUST expor resumo agregado em endpoint autenticado protegido por `stock.read`, com total de registros e somas das quantidades de entrada e saída, aplicando data inicial, data final, Produto e Fornecedor ao conjunto completo. O resumo MUST NOT ser calculado apenas com a página atual. Nenhuma permissão de escrita ou grant novo será introduzido.
+O Xano MUST expor resumo agregado em endpoint autenticado protegido por `stock.read`, com total de registros e somas das quantidades de entrada e saída, aplicando data inicial, data final, tipo, Produto e Fornecedor ao conjunto completo. O resumo MUST NOT ser calculado apenas sobre a página atual. Nenhuma permissão de escrita ou grant novo será introduzido.
 
 #### Scenario: Agregar conjunto filtrado
 
 - **WHEN** um usuário autenticado com `stock.read` consulta o resumo
-- **THEN** recebe totais de ambos os tipos de movimentação para todos os registros correspondentes aos filtros.
+- **THEN** recebe totais para todos os registros correspondentes aos filtros aplicados.
+
+### Requirement: Exportar relatório completo
+
+A tela MUST oferecer exportação PDF em paisagem e XLSX dos dados completos correspondentes aos filtros aplicados, independentemente da página visível. Os arquivos MUST incluir filtros, resumo e tabela com Data/Hora, Tipo, Código, Produto, Quantidade, Usuário, Fornecedor e Motivo. A exportação MUST percorrer as páginas de `GET /movements` e respeitar um limite de segurança, sem solicitar uma página arbitrariamente grande.
+
+#### Scenario: Exportar conjunto com várias páginas
+
+- **WHEN** os filtros retornarem mais registros do que cabem na página atual
+- **THEN** os arquivos contêm todas as páginas do conjunto filtrado.
 
 ### Requirement: Tratar sessão e erros
 
-Relatórios MUST reutilizar a sessão atual. 401 MUST seguir o fluxo de login, 403 MUST exibir falta de permissão, entradas inválidas MUST receber mensagem específica e falhas inesperadas MUST exibir mensagem genérica sem traceback.
+Relatórios MUST reutilizar a sessão atual. 401 MUST seguir o fluxo de login, 403 MUST exibir falta de permissão, entradas inválidas MUST receber mensagem específica e falhas inesperadas MUST exibir mensagem genérica sem traceback. Logs diagnósticos MUST incluir endpoint, status e detalhes do erro sem incluir token de autenticação.
 
 #### Scenario: Erro de autorização
 
 - **WHEN** o backend responde 401 ou 403
 - **THEN** o sistema redireciona para login no caso 401 e informa falta de permissão no caso 403.
-
-### Requirement: Manter exportação futura fora desta versão
-
-A primeira versão MUST NOT implementar exportação PDF, Excel ou CSV.
-
-#### Scenario: Ações da tela
-
-- **WHEN** a tela de Relatórios é exibida
-- **THEN** não são apresentados controles de exportação PDF, Excel ou CSV.
