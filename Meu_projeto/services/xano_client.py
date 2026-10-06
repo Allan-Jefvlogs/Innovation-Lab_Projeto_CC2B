@@ -1,4 +1,4 @@
-"""Cliente HTTP para comunicação com a API do Xano."""
+# reflex """Cliente HTTP para comunicação com a API do Xano."""
 
 import os
 import logging
@@ -439,7 +439,6 @@ class XanoAuthClient:
             params["situacao"] = situacao
         if search and search.strip():
             params["search"] = search.strip()
-        logger.info("Stock request params: %r", params)
         data = await self._inventory_request(
             "GET",
             "/stock",
@@ -477,19 +476,12 @@ class XanoAuthClient:
         tipo: Optional[str] = None,
         product_id: Optional[int] = None,
         user_id: Optional[int] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        supplier_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Consulta uma página do histórico enriquecido no grupo Inventory Stock."""
         params: Dict[str, Any] = {"page": page, "per_page": per_page}
         if tipo in {"entrada", "saida"}:
             params["tipo"] = tipo
-        for name, value in (
-            ("product_id", product_id),
-            ("user_id", user_id),
-            ("supplier_id", supplier_id),
-        ):
+        for name, value in (("product_id", product_id), ("user_id", user_id)):
             if value is None or value == "":
                 continue
             try:
@@ -499,13 +491,6 @@ class XanoAuthClient:
             if numeric_id <= 0:
                 continue
             params[name] = numeric_id
-        for name, value in (("date_from", date_from), ("date_to", date_to)):
-            if value is None:
-                continue
-            try:
-                params[name] = int(value)
-            except (TypeError, ValueError):
-                continue
         logger.info("Movement history params: %r", params)
         data = await self._inventory_request(
             "GET",
@@ -523,61 +508,6 @@ class XanoAuthClient:
             )
             raise XanoServerError("O Xano retornou movimentações em formato inesperado.")
         return data
-
-    async def get_movements_summary(
-        self,
-        auth_token: str,
-        *,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        tipo: Optional[str] = None,
-        product_id: Optional[int] = None,
-        supplier_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Consulta o resumo completo do conjunto filtrado de movimentaÃ§Ãµes."""
-        params: Dict[str, Any] = {}
-        if tipo in {"entrada", "saida"}:
-            params["tipo"] = tipo
-        for name, value in (
-            ("product_id", product_id),
-            ("supplier_id", supplier_id),
-        ):
-            if value is None or value == "":
-                continue
-            try:
-                numeric_id = int(value)
-            except (TypeError, ValueError):
-                continue
-            if numeric_id > 0:
-                params[name] = numeric_id
-        for name, value in (("date_from", date_from), ("date_to", date_to)):
-            if value is None:
-                continue
-            try:
-                params[name] = int(value)
-            except (TypeError, ValueError):
-                continue
-
-        data = await self._inventory_request(
-            "GET",
-            "/movements_summary",
-            auth_token,
-            params=params,
-            group_url=self.stock_group_url,
-        )
-        try:
-            total = int(data["total_movimentacoes"])
-            entries = str(data["quantidade_entradas"])
-            exits = str(data["quantidade_saidas"])
-            float(entries)
-            float(exits)
-            return {
-                "total_movimentacoes": total,
-                "quantidade_entradas": entries,
-                "quantidade_saidas": exits,
-            }
-        except (KeyError, TypeError, ValueError) as exc:
-            raise XanoServerError("O Xano retornou o resumo de movimentaÃ§Ãµes em formato inesperado.") from exc
 
     async def list_movement_users(
         self, auth_token: str, page: int = 1, per_page: int = 100

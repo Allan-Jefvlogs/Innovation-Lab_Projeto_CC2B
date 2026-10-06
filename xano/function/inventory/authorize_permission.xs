@@ -10,16 +10,25 @@ function "Inventory/authorize_permission" {
     db.get user {
       field_name = "id"
       field_value = $input.user_id
-      output = ["id", "inventory_profile_id"]
+      output = ["id", "inventory_profile_id", "must_change_password", "is_active"]
     } as $user
 
     precondition ($user != null) {
       error_type = "accessdenied"
       error = "PROFILE_UNASSIGNED"
     }
+    precondition ($user.is_active == true || $user.is_active == null) {
+      error_type = "accessdenied"
+      error = "USER_INACTIVE"
+    }
     precondition ($user.inventory_profile_id != null) {
       error_type = "accessdenied"
       error = "PROFILE_UNASSIGNED"
+    }
+
+    precondition ($user.must_change_password != true) {
+      error_type = "accessdenied"
+      error = "PASSWORD_CHANGE_REQUIRED"
     }
 
     db.get inventory_profile {

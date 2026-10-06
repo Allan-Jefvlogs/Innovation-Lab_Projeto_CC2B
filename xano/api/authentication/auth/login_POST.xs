@@ -20,6 +20,7 @@ query "auth/login" verb=POST {
         "password"
         "account_id"
         "role"
+        "is_active"
       ]
     } as $user
   
@@ -40,6 +41,11 @@ query "auth/login" verb=POST {
       error_type = "accessdenied"
       error = "Invalid Credentials."
     }
+
+    precondition ($user.is_active == true || $user.is_active == null) {
+      error_type = "accessdenied"
+      error = "USER_INACTIVE"
+    }
   
     // Create an authentication token
     security.create_auth_token {
@@ -55,7 +61,7 @@ query "auth/login" verb=POST {
         user_id   : $user.id
         account_id: $user.account_id
         action    : "login"
-        metadata  : $user
+        metadata  : {id: $user.id, name: $user.name, email: $user.email}
       }
     } as $event_log
   }

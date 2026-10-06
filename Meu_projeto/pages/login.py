@@ -223,6 +223,10 @@ def login() -> rx.Component:
                             ),
                             rx.fragment(),
                         ),
+                        rx.cond(
+                            AuthState.password_change_notice != "",
+                            rx.callout(AuthState.password_change_notice, icon="circle_check", color_scheme="green", width="100%"),
+                        ),
                         rx.form(
                             rx.vstack(
                                 rx.vstack(

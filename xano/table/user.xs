@@ -45,6 +45,12 @@ table user {
     int inventory_profile_id? {
       table = "inventory_profile"
     }
+
+    // Existing accounts remain usable; new and reset passwords require a self-service change.
+    bool must_change_password?=false
+
+    // Inactive accounts keep all historical references but cannot authenticate.
+    bool is_active?=true
   }
 
   index = [

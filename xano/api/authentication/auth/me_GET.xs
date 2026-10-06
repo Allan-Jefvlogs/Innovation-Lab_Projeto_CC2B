@@ -19,8 +19,19 @@ query "auth/me" verb=GET {
         "account_id"
         "role"
         "inventory_profile_id"
+        "must_change_password"
+        "is_active"
       ]
     } as $user
+
+    precondition ($user != null) {
+      error_type = "accessdenied"
+      error = "USER_NOT_FOUND"
+    }
+    precondition ($user.is_active == true || $user.is_active == null) {
+      error_type = "accessdenied"
+      error = "USER_INACTIVE"
+    }
   
     // Create an event log for get user record
     function.run "Getting Started Template/create_event_log" {
