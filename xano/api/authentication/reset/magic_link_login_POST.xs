@@ -29,11 +29,17 @@ query "reset/magic-link-login" verb=POST {
         "email"
         "account_id"
         "role"
+        "is_active"
         "password_reset.token"
         "password_reset.expiration"
         "password_reset.used"
       ]
     } as $user
+
+    precondition ($user.is_active !== false) {
+      error_type = "accessdenied"
+      error = "USER_INACTIVE"
+    }
   
     // Validate the UUID matches the hashed value
     security.check_password {

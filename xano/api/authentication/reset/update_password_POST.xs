@@ -24,6 +24,11 @@ query "reset/update_password" verb=POST {
     precondition ($user.id == $auth.id) {
       error_type = "accessdenied"
     }
+
+    precondition ($user.is_active !== false) {
+      error_type = "accessdenied"
+      error = "USER_INACTIVE"
+    }
   
     // Update user record with the new password
     db.edit user {

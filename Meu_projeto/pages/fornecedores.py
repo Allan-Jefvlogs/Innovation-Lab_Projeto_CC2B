@@ -74,7 +74,8 @@ class SupplierState(rx.State):
     endereco: str = ""
     create_loading: bool = False
     update_loading: bool = False
-    can_manage_suppliers: bool = False
+    _can_create_suppliers: bool = False
+    _can_update_suppliers: bool = False
 
     @rx.var
     def filtered_suppliers(self) -> list[dict[str, str]]:
@@ -96,16 +97,36 @@ class SupplierState(rx.State):
     def is_editing(self) -> bool:
         return self.editing_supplier_id != ""
 
+    @rx.var
+    def can_create_suppliers(self) -> bool:
+        return self._can_create_suppliers
+
+    @rx.var
+    def can_update_suppliers(self) -> bool:
+        return self._can_update_suppliers
+
+    @rx.var
+    def can_access_supplier_form(self) -> bool:
+        return (
+            self._can_update_suppliers
+            if self.editing_supplier_id
+            else self._can_create_suppliers
+        )
+
     def load_page(self):
         return [AuthState.require_auth(), SupplierState.load_suppliers()]
 
-    async def _session(self) -> tuple[str, int | None, bool]:
+    async def _session(self) -> tuple[str, bool, list[str]]:
         auth_state = await self.get_state(AuthState)
         return (
             str(auth_state.auth_token or "").strip(),
-            auth_state.inventory_profile_id,
             auth_state.is_authenticated,
+            list(auth_state.permission_codes),
         )
+
+    def _set_write_permissions(self, permission_codes: list[str]):
+        self._can_create_suppliers = "supplier.create" in permission_codes
+        self._can_update_suppliers = "supplier.update" in permission_codes
 
     async def _fetch_all_suppliers(self, token: str) -> list[dict[str, str]]:
         loaded: list[dict[str, str]] = []
@@ -152,11 +173,22 @@ class SupplierState(rx.State):
         self.error_message = ""
         self.success_message = ""
         yield
-        token, profile_id, authenticated = await self._session()
-        self.can_manage_suppliers = profile_id in (1, 2)
+        token, authenticated, permission_codes = await self._session()
+        self._set_write_permissions(permission_codes)
         if not token or not authenticated:
+            self._set_write_permissions([])
+            self.modal_open = False
+            self._clear_form()
             self.is_loading = False
             yield rx.redirect("/")
+            return
+        if "supplier.read" not in permission_codes:
+            self._set_write_permissions([])
+            self.modal_open = False
+            self._clear_form()
+            self.suppliers = []
+            self.is_loading = False
+            yield rx.redirect("/dashboard")
             return
         try:
             self.suppliers = await self._fetch_all_suppliers(token)
@@ -192,8 +224,15 @@ class SupplierState(rx.State):
         self.contato_dirty = False
         self.endereco = ""
 
-    def open_create_modal(self):
-        if not self.can_manage_suppliers:
+    async def open_create_modal(self):
+        token, authenticated, permission_codes = await self._session()
+        self._set_write_permissions(permission_codes)
+        if not token or not authenticated:
+            yield rx.redirect("/")
+            return
+        if "supplier.create" not in permission_codes:
+            self.modal_open = False
+            self.error_message = "Você não possui permissão para cadastrar fornecedores."
             return
         self._clear_form()
         self.error_message = ""
@@ -228,11 +267,17 @@ class SupplierState(rx.State):
         self.endereco = value
 
     async def begin_edit_supplier(self, supplier_id: str):
-        if not self.can_manage_suppliers or self.loading_supplier_id:
+        if self.loading_supplier_id:
             return
-        token, _, authenticated = await self._session()
+        token, authenticated, permission_codes = await self._session()
+        self._set_write_permissions(permission_codes)
         if not token or not authenticated:
             yield rx.redirect("/")
+            return
+        if "supplier.update" not in permission_codes:
+            self.modal_open = False
+            self._clear_form()
+            self.error_message = "Você não possui permissão para editar fornecedores."
             return
         self.loading_supplier_id = supplier_id
         self.error_message = ""
@@ -271,8 +316,21 @@ class SupplierState(rx.State):
     async def save_supplier(self):
         if self.create_loading or self.update_loading:
             return
-        if not self.can_manage_suppliers:
-            self.error_message = "Você não possui permissão para alterar fornecedores."
+        editing_id = self.editing_supplier_id
+        token, authenticated, permission_codes = await self._session()
+        self._set_write_permissions(permission_codes)
+        if not token or not authenticated:
+            yield rx.redirect("/")
+            return
+        required_permission = "supplier.update" if editing_id else "supplier.create"
+        if required_permission not in permission_codes:
+            self.modal_open = False
+            self._clear_form()
+            self.error_message = (
+                "Você não possui permissão para editar fornecedores."
+                if editing_id
+                else "Você não possui permissão para cadastrar fornecedores."
+            )
             return
 
         nome = self.nome_razao_social.strip()
@@ -293,12 +351,6 @@ class SupplierState(rx.State):
             self.error_message = "Informe o documento do fornecedor."
             return
 
-        token, _, authenticated = await self._session()
-        if not token or not authenticated:
-            yield rx.redirect("/")
-            return
-
-        editing_id = self.editing_supplier_id
         self.create_loading = not bool(editing_id)
         self.update_loading = bool(editing_id)
         self.error_message = ""
@@ -383,7 +435,7 @@ def _supplier_row(item: dict[str, str]) -> rx.Component:
         ),
         rx.box(
             rx.cond(
-                SupplierState.can_manage_suppliers,
+                SupplierState.can_update_suppliers,
                 rx.button(
                     rx.cond(
                         SupplierState.loading_supplier_id == item["id"],
@@ -440,7 +492,7 @@ def _supplier_table() -> rx.Component:
 
 def _supplier_modal() -> rx.Component:
     return rx.cond(
-        SupplierState.modal_open,
+        SupplierState.modal_open & SupplierState.can_access_supplier_form,
         rx.box(
             rx.box(
                 rx.vstack(
@@ -581,7 +633,7 @@ def fornecedores() -> rx.Component:
                 rx.button("Buscar", on_click=SupplierState.search_suppliers),
                 rx.spacer(),
                 rx.cond(
-                    SupplierState.can_manage_suppliers,
+                    SupplierState.can_create_suppliers,
                     rx.button("Novo fornecedor", on_click=SupplierState.open_create_modal),
                     rx.fragment(),
                 ),

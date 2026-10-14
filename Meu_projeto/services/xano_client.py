@@ -27,6 +27,7 @@ STOCK_CANONICAL_GROUP = "api:estoque"
 
 _XANO_ERROR_CODES = {
     "DUPLICATE_VALUE",
+    "PASSWORD_CHANGE_NOT_REQUIRED",
     "BUSINESS_RULE_VIOLATION",
     "INVALID_INPUT",
     "INPUT_ERROR",
@@ -36,6 +37,14 @@ _XANO_ERROR_CODES = {
     "PERMISSION_DENIED",
     "PROFILE_UNASSIGNED",
     "PROFILE_INVALID",
+    "DUPLICATE_EMAIL",
+    "PASSWORD_MISMATCH",
+    "USER_INACTIVE",
+    "USER_NOT_FOUND",
+    "USER_CREATE_FAILED",
+    "USER_UPDATE_FAILED",
+    "SELF_INACTIVATION_FORBIDDEN",
+    "LAST_LEADER_REQUIRED",
     "PRODUCT_CREATE_FAILED",
     "PRODUCT_NOT_FOUND",
     "PRODUCT_INACTIVE",
@@ -45,9 +54,15 @@ _XANO_ERROR_CODES = {
     "INSUFFICIENT_STOCK",
     "STOCK_UPDATE_FAILED",
     "STOCK_CONCURRENCY_CONFLICT",
+    "PERMISSION_REVISION_CONFLICT",
+    "UNKNOWN_PERMISSION_CODE",
+    "DUPLICATE_PERMISSION_CODE",
+    "IMMUTABLE_PROFILE",
 }
 
-_SENSITIVE_LOG_KEYS = {"authorization", "token", "auth_token", "password", "secret"}
+_SENSITIVE_LOG_KEYS = {
+    "authorization", "token", "auth_token", "password", "confirm_password", "secret"
+}
 
 
 def _safe_error_log_value(value: Any) -> Any:
@@ -89,13 +104,22 @@ def _extract_xano_error_code(payload: Any) -> str:
             if normalized in _XANO_ERROR_CODES:
                 found.add(normalized)
     for code in (
+        "USER_INACTIVE",
         "DUPLICATE_VALUE",
         "BUSINESS_RULE_VIOLATION",
+        "PASSWORD_CHANGE_NOT_REQUIRED",
         "PRODUCT_CREATE_FAILED",
         "NOT_FOUND",
         "PERMISSION_DENIED",
         "PROFILE_UNASSIGNED",
         "PROFILE_INVALID",
+        "DUPLICATE_EMAIL",
+        "PASSWORD_MISMATCH",
+        "USER_NOT_FOUND",
+        "USER_CREATE_FAILED",
+        "USER_UPDATE_FAILED",
+        "SELF_INACTIVATION_FORBIDDEN",
+        "LAST_LEADER_REQUIRED",
         "PRODUCT_NOT_FOUND",
         "PRODUCT_INACTIVE",
         "SUPPLIER_NOT_FOUND",
@@ -104,6 +128,10 @@ def _extract_xano_error_code(payload: Any) -> str:
         "INSUFFICIENT_STOCK",
         "STOCK_UPDATE_FAILED",
         "STOCK_CONCURRENCY_CONFLICT",
+        "PERMISSION_REVISION_CONFLICT",
+        "UNKNOWN_PERMISSION_CODE",
+        "DUPLICATE_PERMISSION_CODE",
+        "IMMUTABLE_PROFILE",
         "INVALID_INPUT",
         "VALIDATION_ERROR",
         "INPUT_ERROR",
@@ -127,6 +155,13 @@ class XanoError(Exception):
 class XanoAuthError(XanoError):
     """Exceção para falhas de autenticação ou credenciais inválidas (HTTP 401/403)."""
     pass
+
+
+def is_user_inactive_error(error: XanoError) -> bool:
+    """Identifica USER_INACTIVE em respostas Xano, inclusive envelopes aninhados."""
+    return _extract_xano_error_code(error.payload) == "USER_INACTIVE" or (
+        error.message.strip().upper() == "USER_INACTIVE"
+    )
 
 
 class XanoPermissionError(XanoError):
@@ -254,6 +289,13 @@ class XanoAuthClient:
             _safe_error_log_value(data.get("message")) if isinstance(data, dict) else None,
             _safe_error_log_value(data.get("payload")) if isinstance(data, dict) else None,
         )
+        error_code = _extract_xano_error_code(data)
+        if error_code == "USER_INACTIVE":
+            raise XanoAuthError(
+                "Sua conta foi inativada. Entre em contato com o Líder.",
+                status_code=response.status_code,
+                payload=payload,
+            )
         if response.status_code == 401:
             raise XanoAuthError(
                 "Sua sessão expirou. Faça login novamente.",
@@ -267,12 +309,12 @@ class XanoAuthClient:
                 payload=payload,
             )
 
-        error_code = _extract_xano_error_code(data)
         friendly_messages = {
             "INVALID_INPUT": "Confira os campos informados e tente novamente.",
             "INPUT_ERROR": "Confira os campos obrigatórios e os valores informados.",
             "INPUTERROR": "Confira os campos obrigatórios e os valores informados.",
             "VALIDATION_ERROR": "Confira os campos obrigatórios e os valores informados.",
+            "PASSWORD_MISMATCH": "A confirmação da senha não confere.",
             "DUPLICATE_VALUE": "Já existe um produto com esse código.",
             "BUSINESS_RULE_VIOLATION": "A Categoria selecionada não existe ou está inativa. Selecione uma Categoria ativa.",
             "NOT_FOUND": "O produto solicitado não foi encontrado.",
@@ -292,6 +334,118 @@ class XanoAuthClient:
             f"O Xano não concluiu a operação ({response.status_code}). Tente novamente.",
         )
         raise XanoRequestError(message, error_code, response.status_code, payload)
+
+    async def get_permissions(self, auth_token: str) -> Dict[str, Any]:
+        """Consulta perfis, catálogo e matriz administrativa já existentes no Xano."""
+        data = await self._inventory_request("GET", "/permissions", auth_token)
+        if not all(isinstance(data.get(key), list) for key in ("profiles", "permissions", "permission_matrix")):
+            raise XanoServerError("O Xano retornou a matriz de permissões em formato inesperado.")
+        return data
+
+    async def update_profile_permissions(
+        self, auth_token: str, profile_code: str, permissions: list[str], permission_revision: int
+    ) -> Dict[str, Any]:
+        if profile_code not in {"stockkeeper", "read_only"}:
+            raise ValueError("O perfil selecionado não pode ser editado.")
+        return await self._inventory_request(
+            "PATCH", f"/permissions/profiles/{profile_code}", auth_token,
+            json_payload={"permissions": permissions, "permission_revision": permission_revision},
+        )
+
+    async def list_users(
+        self,
+        auth_token: str,
+        page: int = 1,
+        per_page: int = 20,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Consulta a listagem paginada de usuários do endpoint existente GET /users."""
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if search and search.strip():
+            params["search"] = search.strip()
+        data = await self._inventory_request("GET", "/users", auth_token, params=params)
+        if not isinstance(data.get("items"), list):
+            raise XanoServerError("O Xano retornou usuários em formato inesperado.")
+        return data
+
+    async def get_inventory_profiles(self, auth_token: str) -> Dict[str, Any]:
+        """Obtém os perfis reais pelo endpoint existente GET /permissions."""
+        data = await self._inventory_request("GET", "/permissions", auth_token)
+        if not isinstance(data.get("profiles"), list):
+            raise XanoServerError("O Xano retornou perfis em formato inesperado.")
+        return data
+
+    async def get_user(self, auth_token: str, user_id: int) -> Dict[str, Any]:
+        """Consulta um usuário pelo endpoint existente GET /users/by_id/{user_id}."""
+        return await self._inventory_request("GET", f"/users/by_id/{user_id}", auth_token)
+
+    async def create_user(
+        self,
+        auth_token: str,
+        *,
+        name: str,
+        email: str,
+        password: str,
+        confirm_password: str,
+        inventory_profile_id: int,
+    ) -> Dict[str, Any]:
+        """Cria usuário pelo endpoint existente POST /users."""
+        return await self._inventory_request(
+            "POST",
+            "/users",
+            auth_token,
+            json_payload={
+                "name": name,
+                "email": email,
+                "password": password,
+                "confirm_password": confirm_password,
+                "inventory_profile_id": inventory_profile_id,
+            },
+        )
+
+    async def update_user(
+        self,
+        auth_token: str,
+        user_id: int,
+        *,
+        name: str,
+        email: str,
+        inventory_profile_id: int,
+    ) -> Dict[str, Any]:
+        """Atualiza dados do usuário pelo endpoint existente PATCH /users/by_id/{user_id}."""
+        return await self._inventory_request(
+            "PATCH",
+            f"/users/by_id/{user_id}",
+            auth_token,
+            json_payload={
+                "name": name,
+                "email": email,
+                "inventory_profile_id": inventory_profile_id,
+            },
+        )
+
+    async def reset_user_password(
+        self, auth_token: str, user_id: int, password: str, confirm_password: str
+    ) -> Dict[str, Any]:
+        """Reseta a senha pelo endpoint existente PATCH /users/by_id/{user_id}/reset_password."""
+        return await self._inventory_request(
+            "PATCH",
+            f"/users/by_id/{user_id}/reset_password",
+            auth_token,
+            json_payload={"password": password, "confirm_password": confirm_password},
+        )
+
+    async def activate_user(self, auth_token: str, user_id: int) -> Dict[str, Any]:
+        """Ativa um usuário pelo endpoint existente PATCH /users/by_id/{user_id}/activate."""
+        return await self._inventory_request(
+            "PATCH", f"/users/by_id/{user_id}/activate", auth_token
+        )
+
+    async def inactivate_user(self, auth_token: str, user_id: int) -> Dict[str, Any]:
+        """Inativa um usuário pelo endpoint existente PATCH /users/by_id/{user_id}/inactivate."""
+        return await self._inventory_request(
+            "PATCH", f"/users/by_id/{user_id}/inactivate", auth_token
+        )
 
     async def list_products(
         self, auth_token: str, page: int = 1, per_page: int = 100
@@ -352,13 +506,20 @@ class XanoAuthClient:
         )
 
     async def list_suppliers(
-        self, auth_token: str, page: int = 1, per_page: int = 100
+        self,
+        auth_token: str,
+        page: int = 1,
+        per_page: int = 100,
+        status: Optional[str] = None,
     ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if status in {"ativo", "inativo"}:
+            params["status"] = status
         data = await self._inventory_request(
             "GET",
             "/suppliers",
             auth_token,
-            params={"page": page, "per_page": per_page},
+            params=params,
         )
         if not isinstance(data.get("items"), list):
             raise XanoServerError("O Xano retornou Fornecedores em formato inesperado.")
@@ -476,12 +637,19 @@ class XanoAuthClient:
         tipo: Optional[str] = None,
         product_id: Optional[int] = None,
         user_id: Optional[int] = None,
+        date_from: Optional[int] = None,
+        date_to: Optional[int] = None,
+        supplier_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Consulta uma página do histórico enriquecido no grupo Inventory Stock."""
         params: Dict[str, Any] = {"page": page, "per_page": per_page}
         if tipo in {"entrada", "saida"}:
             params["tipo"] = tipo
-        for name, value in (("product_id", product_id), ("user_id", user_id)):
+        for name, value in (
+            ("product_id", product_id),
+            ("user_id", user_id),
+            ("supplier_id", supplier_id),
+        ):
             if value is None or value == "":
                 continue
             try:
@@ -491,6 +659,13 @@ class XanoAuthClient:
             if numeric_id <= 0:
                 continue
             params[name] = numeric_id
+        for name, value in (("date_from", date_from), ("date_to", date_to)):
+            if value is None:
+                continue
+            try:
+                params[name] = int(value)
+            except (TypeError, ValueError):
+                continue
         logger.info("Movement history params: %r", params)
         data = await self._inventory_request(
             "GET",
@@ -508,6 +683,54 @@ class XanoAuthClient:
             )
             raise XanoServerError("O Xano retornou movimentações em formato inesperado.")
         return data
+
+    async def get_movements_summary(
+        self,
+        auth_token: str,
+        *,
+        date_from: Optional[int] = None,
+        date_to: Optional[int] = None,
+        tipo: Optional[str] = None,
+        product_id: Optional[int] = None,
+        supplier_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Consulta o resumo completo do conjunto filtrado de movimentações."""
+        params: Dict[str, Any] = {}
+        if tipo in {"entrada", "saida"}:
+            params["tipo"] = tipo
+        for name, value in (("product_id", product_id), ("supplier_id", supplier_id)):
+            if value is None or value == "":
+                continue
+            try:
+                numeric_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric_id > 0:
+                params[name] = numeric_id
+        for name, value in (("date_from", date_from), ("date_to", date_to)):
+            if value is None:
+                continue
+            try:
+                params[name] = int(value)
+            except (TypeError, ValueError):
+                continue
+
+        data = await self._inventory_request(
+            "GET", "/movements_summary", auth_token, params=params, group_url=self.stock_group_url
+        )
+        try:
+            total = int(data["total_movimentacoes"])
+            entries = str(data["quantidade_entradas"])
+            exits = str(data["quantidade_saidas"])
+            float(entries)
+            float(exits)
+            return {
+                "total_movimentacoes": total,
+                "quantidade_entradas": entries,
+                "quantidade_saidas": exits,
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise XanoServerError("O Xano retornou o resumo de movimentações em formato inesperado.") from exc
 
     async def list_movement_users(
         self, auth_token: str, page: int = 1, per_page: int = 100
@@ -528,6 +751,23 @@ class XanoAuthClient:
                 type(data.get("items")).__name__,
             )
             raise XanoServerError("O Xano retornou usuários em formato inesperado.")
+        return data
+
+    async def list_report_options(
+        self, auth_token: str, kind: str, page: int = 1, per_page: int = 100
+    ) -> Dict[str, Any]:
+        """Lista opções mínimas de produtos/fornecedores protegidas por report.read."""
+        if kind not in {"product", "supplier"}:
+            raise ValueError("O tipo de opção de relatório deve ser product ou supplier.")
+        data = await self._inventory_request(
+            "GET",
+            "/report_options",
+            auth_token,
+            params={"kind": kind, "page": page, "per_page": per_page},
+            group_url=self.stock_group_url,
+        )
+        if not isinstance(data.get("items"), list):
+            raise XanoServerError("O Xano retornou opções de relatório em formato inesperado.")
         return data
 
     async def create_stock_entry(
@@ -614,6 +854,32 @@ class XanoAuthClient:
             "PATCH", f"/products/by_id/{product_id}/activate", auth_token
         )
 
+    async def change_initial_password(
+        self, auth_token: str, password: str, confirmation: str
+    ) -> Dict[str, Any]:
+        """Altera a senha inicial pela API autenticada existente do Xano."""
+        try:
+            data = await self._inventory_request(
+                "PATCH",
+                "/auth/change-initial-password",
+                auth_token,
+                json_payload={"password": password, "confirm_password": confirmation},
+                group_url=self.auth_group_url,
+            )
+        except XanoPermissionError as exc:
+            if _extract_xano_error_code(exc.payload) == "PASSWORD_CHANGE_NOT_REQUIRED":
+                raise XanoRequestError(
+                    "Não há troca de senha pendente para esta conta.",
+                    "PASSWORD_CHANGE_NOT_REQUIRED",
+                    exc.status_code or 403,
+                    exc.payload,
+                ) from exc
+            raise
+
+        if data.get("must_change_password") is not False:
+            raise XanoServerError("O Xano retornou uma resposta inesperada ao alterar a senha.")
+        return {"must_change_password": False}
+
     async def login(self, email: str, password: str) -> Dict[str, Any]:
         """Realiza autenticação por e-mail e senha consumindo POST auth/login.
 
@@ -656,6 +922,12 @@ class XanoAuthClient:
                 error_payload = response.json()
             except Exception:
                 error_payload = {}
+            if _extract_xano_error_code(error_payload) == "USER_INACTIVE":
+                raise XanoAuthError(
+                    "Sua conta foi inativada. Entre em contato com o Líder.",
+                    status_code=response.status_code,
+                    payload=error_payload,
+                )
             raise XanoAuthError(
                 "E-mail ou senha incorretos.",
                 status_code=response.status_code,
@@ -715,6 +987,12 @@ class XanoAuthClient:
                 error_payload = response.json()
             except Exception:
                 error_payload = {}
+            if _extract_xano_error_code(error_payload) == "USER_INACTIVE":
+                raise XanoAuthError(
+                    "Sua conta foi inativada. Entre em contato com o Líder.",
+                    status_code=response.status_code,
+                    payload=error_payload,
+                )
             raise XanoAuthError(
                 "Sessão expirada ou não autorizada. Faça login novamente.",
                 status_code=response.status_code,

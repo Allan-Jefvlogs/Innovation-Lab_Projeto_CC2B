@@ -8,54 +8,33 @@ from ..services.xano_client import (
     XanoConnectionError,
     XanoServerError,
     auth_client,
+    is_user_inactive_error,
 )
 
 
-PROFILE_ALLOWED_ROUTES = {
-    2: frozenset(
-        {
-            "/dashboard",
-            "/produtos",
-            "/categorias",
-            "/fornecedores",
-            "/estoque",
-            "/movimentacoes/entradas",
-            "/movimentacoes/saidas",
-            "/movimentacoes",
-            "/relatorios",
-        }
-    ),
-    3: frozenset(
-        {
-            "/dashboard",
-            "/produtos",
-            "/categorias",
-            "/fornecedores",
-            "/estoque",
-            "/movimentacoes",
-            "/relatorios",
-        }
-    ),
+ROUTE_PERMISSION = {
+    "/produtos": "product.read",
+    "/categorias": "category.read",
+    "/fornecedores": "supplier.read",
+    "/estoque": "stock.read",
+    "/movimentacoes": "movement.read",
+    "/movimentacoes/entradas": "stock.entry",
+    "/movimentacoes/saidas": "stock.exit",
+    "/relatorios": "report.read",
 }
 
 
-def profile_can_access_route(profile_id: Optional[int], route_path: str) -> bool:
-    """Retorna se o perfil pode navegar para a rota solicitada no frontend."""
+def _required_route_permission(route_path: str) -> Optional[str]:
+    """Resolve o grant exigido por uma rota operacional, incluindo subrotas."""
     path = route_path.rstrip("/") or "/"
-    if path == "/dashboard" or profile_id == 1:
-        return True
     if path == "/produtos/novo":
-        return profile_id == 2
+        return "product.create"
     route_parts = path.strip("/").split("/")
-    if (
-        profile_id == 2
-        and len(route_parts) == 3
-        and route_parts[0] == "produtos"
-        and route_parts[1].isdigit()
-        and route_parts[2] == "editar"
-    ):
-        return True
-    return path in PROFILE_ALLOWED_ROUTES.get(profile_id, frozenset())
+    if len(route_parts) == 3 and route_parts[0] == "produtos" and route_parts[1].isdigit() and route_parts[2] == "editar":
+        return "product.update"
+    if path.startswith("/produtos/"):
+        return "product.read"
+    return ROUTE_PERMISSION.get(path)
 
 
 class AuthState(rx.State):
@@ -70,6 +49,8 @@ class AuthState(rx.State):
     user_email: str = ""
     user_role: str = ""
     inventory_profile_id: Optional[int] = None
+    inventory_profile_code: str = ""
+    permission_codes: list[str] = []
     profile_name: str = ""
     must_change_password: bool = False
     password_change_notice: str = ""
@@ -90,6 +71,8 @@ class AuthState(rx.State):
         self.user_email = ""
         self.user_role = ""
         self.inventory_profile_id = None
+        self.inventory_profile_code = ""
+        self.permission_codes = []
         self.profile_name = ""
         self.must_change_password = False
         self.is_authenticated = False
@@ -105,9 +88,16 @@ class AuthState(rx.State):
         # Resolução do perfil de estoque
         raw_profile_id = data.get("inventory_profile_id")
         self.inventory_profile_id = int(raw_profile_id) if raw_profile_id is not None else None
+        self.inventory_profile_code = str(data.get("inventory_profile_code") or "")
+        raw_permission_codes = data.get("permission_codes")
+        self.permission_codes = (
+            [code for code in raw_permission_codes if isinstance(code, str)]
+            if isinstance(raw_permission_codes, list)
+            else []
+        )
 
         pid = self.inventory_profile_id
-        if pid == 1 or self.user_role == "administrator":
+        if self.inventory_profile_code == "administrator" or pid == 1 or self.user_role == "administrator":
             self.profile_name = "Líder"
         elif pid == 2 or self.user_role == "stockkeeper":
             self.profile_name = "Almoxarife"
@@ -115,6 +105,46 @@ class AuthState(rx.State):
             self.profile_name = "Auxiliar de almoxarifado"
         else:
             self.profile_name = "Sem perfil atribuído"
+
+    def has_permission(self, permission_code: str) -> bool:
+        """Usa os grants efetivos retornados pelo Xano para esta sessão."""
+        return self.is_administrator or permission_code in self.permission_codes
+
+    @rx.var
+    def is_administrator(self) -> bool:
+        return self.inventory_profile_code == "administrator"
+
+    @rx.var
+    def can_read_products(self) -> bool:
+        return self.has_permission("product.read")
+
+    @rx.var
+    def can_read_categories(self) -> bool:
+        return self.has_permission("category.read")
+
+    @rx.var
+    def can_read_suppliers(self) -> bool:
+        return self.has_permission("supplier.read")
+
+    @rx.var
+    def can_read_stock(self) -> bool:
+        return self.has_permission("stock.read")
+
+    @rx.var
+    def can_stock_entry(self) -> bool:
+        return self.has_permission("stock.entry")
+
+    @rx.var
+    def can_stock_exit(self) -> bool:
+        return self.has_permission("stock.exit")
+
+    @rx.var
+    def can_read_movements(self) -> bool:
+        return self.has_permission("movement.read")
+
+    @rx.var
+    def can_read_reports(self) -> bool:
+        return self.has_permission("report.read")
 
     async def restore_session(self) -> bool:
         """Restaura a sessão do usuário caso exista um token persistido.
@@ -139,7 +169,7 @@ class AuthState(rx.State):
             self.auth_token = ""
             self.error_message = (
                 "Seu usuário está inativo. Entre em contato com o administrador."
-                if exc.payload.get("message") == "USER_INACTIVE" or exc.message.startswith("Seu usuário está inativo")
+                if is_user_inactive_error(exc)
                 else ""
             )
             return False
@@ -239,7 +269,11 @@ class AuthState(rx.State):
             if not self.must_change_password:
                 return rx.redirect("/dashboard")
             return
-        if not profile_can_access_route(self.inventory_profile_id, current_path):
+        if current_path in {"/usuarios", "/perfis"}:
+            if not self.is_administrator:
+                return rx.redirect("/dashboard")
+        required_permission = _required_route_permission(current_path)
+        if required_permission and not self.has_permission(required_permission):
             return rx.redirect("/dashboard")
 
     async def check_already_logged_in(self):

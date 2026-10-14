@@ -12,7 +12,7 @@ query "movements_summary" verb=GET {
 
   stack {
     function.run "Inventory/authorize_permission" {
-      input = {user_id: $auth.id, permission_code: "stock.read"}
+      input = {user_id: $auth.id, permission_code: "report.read"}
     } as $authorization
 
     precondition ($input.date_from == null || $input.date_to == null || $input.date_from <= $input.date_to) {

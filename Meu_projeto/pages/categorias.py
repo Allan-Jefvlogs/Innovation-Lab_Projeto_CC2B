@@ -25,7 +25,9 @@ class CategoryState(rx.State):
     modal_open: bool = False
     new_category_name: str = ""
     create_loading: bool = False
-    can_manage_categories: bool = False
+    can_create_category: bool = False
+    can_activate_categories: bool = False
+    can_inactivate_categories: bool = False
 
     status_loading_category_id: str = ""
 
@@ -43,11 +45,13 @@ class CategoryState(rx.State):
     def load_page(self):
         return [AuthState.require_auth(), CategoryState.load_categories()]
 
-    async def _session(self) -> tuple[str, int | None, bool]:
+    async def _session(self) -> tuple[str, bool]:
         auth_state = await self.get_state(AuthState)
+        self.can_create_category = auth_state.has_permission("category.create")
+        self.can_activate_categories = auth_state.has_permission("category.update")
+        self.can_inactivate_categories = auth_state.has_permission("category.inactivate")
         return (
             str(auth_state.auth_token or "").strip(),
-            auth_state.inventory_profile_id,
             auth_state.is_authenticated,
         )
 
@@ -75,8 +79,7 @@ class CategoryState(rx.State):
         self.error_message = ""
         self.success_message = ""
         yield
-        token, profile_id, authenticated = await self._session()
-        self.can_manage_categories = profile_id == 1
+        token, authenticated = await self._session()
         if not token or not authenticated:
             self.is_loading = False
             yield rx.redirect("/")
@@ -106,8 +109,12 @@ class CategoryState(rx.State):
     def search_categories(self):
         self.applied_search_term = self.search_term
 
-    def open_create_modal(self):
-        if not self.can_manage_categories:
+    async def open_create_modal(self):
+        token, authenticated = await self._session()
+        if not token or not authenticated:
+            return rx.redirect("/")
+        if not self.can_create_category:
+            self.error_message = "Você não possui permissão para criar categorias."
             return
         self.error_message = ""
         self.success_message = ""
@@ -123,18 +130,17 @@ class CategoryState(rx.State):
     async def create_category(self):
         if self.create_loading:
             return
-        if not self.can_manage_categories:
+        token, authenticated = await self._session()
+        if not token or not authenticated:
+            yield rx.redirect("/")
+            return
+        if not self.can_create_category:
             self.error_message = "Você não possui permissão para criar categorias."
             return
         nome = self.new_category_name.strip()
         if not nome:
             self.error_message = "Informe o nome da categoria."
             return
-        token, _, authenticated = await self._session()
-        if not token or not authenticated:
-            yield rx.redirect("/")
-            return
-
         self.create_loading = True
         self.error_message = ""
         self.success_message = ""
@@ -170,15 +176,21 @@ class CategoryState(rx.State):
     async def change_category_status(self, category_id: str, active: bool):
         if self.status_loading_category_id:
             return
-        if not self.can_manage_categories:
-            self.error_message = "Você não possui permissão para alterar categorias."
-            return
         category = next((item for item in self.categories if item["id"] == category_id), None)
         if category is None:
             return
-        token, _, authenticated = await self._session()
+        token, authenticated = await self._session()
         if not token or not authenticated:
             yield rx.redirect("/")
+            return
+
+        current_status = category.get("status")
+        expected_active = current_status == "inativo"
+        if current_status not in {"ativo", "inativo"} or active != expected_active:
+            self.error_message = "O status da categoria mudou. Atualize a listagem e tente novamente."
+            return
+        if not (self.can_activate_categories if expected_active else self.can_inactivate_categories):
+            self.error_message = "Você não possui permissão para alterar o status desta categoria."
             return
 
         self.status_loading_category_id = category_id
@@ -238,7 +250,8 @@ def _category_row(category: dict[str, str]) -> rx.Component:
             checked=category["status"] == "ativo",
             on_change=CategoryState.change_category_status(category["id"]),
             disabled=(
-                (CategoryState.can_manage_categories == False)
+                ((category["status"] == "ativo") & (CategoryState.can_inactivate_categories == False))
+                | ((category["status"] == "inativo") & (CategoryState.can_activate_categories == False))
                 | (CategoryState.status_loading_category_id != "")
                 | ((category["status"] != "ativo") & (category["status"] != "inativo"))
             ),
@@ -358,7 +371,7 @@ def categorias() -> rx.Component:
                 rx.button("Buscar", on_click=CategoryState.search_categories),
                 rx.spacer(),
                 rx.cond(
-                    CategoryState.can_manage_categories,
+                    CategoryState.can_create_category,
                     rx.button("Nova categoria", on_click=CategoryState.open_create_modal),
                     rx.fragment(),
                 ),

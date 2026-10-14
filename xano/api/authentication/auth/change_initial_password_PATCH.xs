@@ -26,7 +26,7 @@ query "auth/change-initial-password" verb=PATCH {
       error_type = "accessdenied"
       error = "USER_NOT_FOUND"
     }
-    precondition ($current_user.is_active == true || $current_user.is_active == null) {
+    precondition ($current_user.is_active !== false) {
       error_type = "accessdenied"
       error = "USER_INACTIVE"
     }

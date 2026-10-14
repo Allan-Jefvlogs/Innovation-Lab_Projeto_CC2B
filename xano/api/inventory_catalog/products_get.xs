@@ -20,6 +20,16 @@ query "products" verb=GET {
     }
 
     db.query product {
+      join = {
+        category: {
+          table: "category",
+          type: "left",
+          where: $db.product.categoria_id == $db.category.id
+        }
+      }
+      eval = {
+        categoria_nome: $db.category.nome
+      }
       where = $db.product.status ==? $input.status && $db.product.categoria_id ==? $input.categoria_id
       sort = {id: "asc"}
       return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}

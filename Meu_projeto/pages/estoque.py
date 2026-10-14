@@ -62,6 +62,8 @@ class StockState(rx.State):
             "product_id": str(item.get("product_id") or ""),
             "codigo": str(item.get("codigo") or "—"),
             "nome": str(item.get("nome") or "Produto não encontrado"),
+            "categoria": str(item.get("categoria_nome") or "Sem categoria"),
+            "fornecedor": str(item.get("fornecedor_nome") or "Sem fornecedor"),
             "atual": StockState._format_quantity(item.get("quantidade_disponivel")),
             "minimo": StockState._format_quantity(item.get("estoque_minimo")),
             "situacao": situation,
@@ -183,17 +185,19 @@ def _stock_status_badge(row: dict[str, str]) -> rx.Component:
     return rx.badge(row["situacao_label"], color=color, background=background)
 
 
-STOCK_GRID = "120px minmax(180px, 1fr) 110px 110px 170px"
+STOCK_GRID = "120px minmax(220px, 1.35fr) minmax(150px, 0.9fr) minmax(190px, 1.15fr) 82px 82px 145px"
 
 
 def _stock_row(row: dict[str, str]) -> rx.Component:
     return rx.grid(
         rx.text(row["codigo"], padding_x="8px"),
         rx.text(row["nome"], padding_x="8px"),
+        rx.text(row["categoria"], padding_x="8px"),
+        rx.text(row["fornecedor"], padding_x="8px"),
         rx.text(row["atual"], padding_x="8px"),
         rx.text(row["minimo"], padding_x="8px"),
         rx.box(_stock_status_badge(row), padding_x="8px"),
-        columns="5",
+        columns="7",
         width="100%",
         column_gap="12px",
         style={"grid_template_columns": STOCK_GRID, "align_items": "center"},
@@ -206,9 +210,9 @@ def _stock_table() -> rx.Component:
     header = rx.grid(
         *[
             rx.text(title, weight="bold", padding_x="8px")
-            for title in ["Código", "Produto", "Atual", "Mínimo", "Situação"]
+            for title in ["Código", "Produto", "Categoria", "Fornecedor", "Atual", "Mínimo", "Situação"]
         ],
-        columns="5",
+        columns="7",
         width="100%",
         column_gap="12px",
         style={"grid_template_columns": STOCK_GRID, "align_items": "center"},

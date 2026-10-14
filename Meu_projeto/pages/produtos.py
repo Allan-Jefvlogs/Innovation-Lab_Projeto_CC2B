@@ -36,7 +36,6 @@ def _normalize_product_unit(value: object) -> str:
 
 def _map_product_to_list_item(
     item: dict[str, Any],
-    category_names: dict[str, str],
     stock_by_product: dict[str, dict[str, Any]],
 ) -> dict[str, str]:
     product_id = str(item.get("id", ""))
@@ -62,9 +61,7 @@ def _map_product_to_list_item(
     if category_id is None:
         category_name = "Sem categoria"
     else:
-        category_name = category_names.get(
-            str(category_id), "Categoria não encontrada"
-        )
+        category_name = str(item.get("categoria_nome") or "Categoria não encontrada")
 
     return {
         "id": product_id,
@@ -113,7 +110,11 @@ class ProductsState(rx.State):
     is_loading: bool = False
     is_saving: bool = False
     is_status_loading: bool = False
-    can_manage_products: bool = False
+    can_read_products: bool = False
+    can_create_products: bool = False
+    can_update_products: bool = False
+    can_activate_products: bool = False
+    can_inactivate_products: bool = False
     has_loaded_product: bool = False
     has_products: bool = False
     error_message: str = ""
@@ -159,6 +160,19 @@ class ProductsState(rx.State):
     @rx.var
     def status_action_label(self) -> str:
         return "Inativar produto" if self.current_product_status == "ativo" else "Ativar produto"
+
+    @rx.var
+    def can_change_product_status(self) -> bool:
+        if not self.has_loaded_product:
+            return False
+        if self.current_product_status != self.original_product_status:
+            # A ação desfaz a alteração local pendente; não persiste status.
+            return True
+        if self.current_product_status == "ativo":
+            return self.can_inactivate_products
+        if self.current_product_status == "inativo":
+            return self.can_activate_products
+        return False
 
     @rx.var
     def is_product_active(self) -> bool:
@@ -245,10 +259,27 @@ class ProductsState(rx.State):
     def select_supplier(self, supplier_id: str):
         selected_id = str(supplier_id)
         option = next((item for item in self.supplier_options if item["id"] == selected_id), None)
-        if option and option.get("disabled") != "true":
+        if (
+            option
+            and option.get("disabled") != "true"
+            and (selected_id == "none" or option.get("status") == "ativo")
+        ):
             self.supplier_selection = selected_id
             self.supplier_search_query = option["label"]
             self.supplier_dropdown_open = False
+
+    async def _validate_active_supplier(self, token: str, supplier_id: int) -> bool:
+        try:
+            supplier = await auth_client.get_supplier(token, supplier_id)
+        except XanoRequestError as exc:
+            if exc.error_code == "NOT_FOUND":
+                self.error_message = "O Fornecedor selecionado não existe. Escolha um Fornecedor ativo."
+                return False
+            raise
+        if supplier.get("status") != "ativo":
+            self.error_message = "O Fornecedor selecionado está inativo. Escolha um Fornecedor ativo."
+            return False
+        return True
 
     def change_unidade_medida(self, value: str):
         self.unidade_medida = _normalize_product_unit(value)
@@ -285,7 +316,12 @@ class ProductsState(rx.State):
     async def _session(self):
         auth_state = await self.get_state(AuthState)
         token = str(auth_state.auth_token or "").strip()
-        return token, auth_state.inventory_profile_id, auth_state.is_authenticated
+        self.can_read_products = auth_state.has_permission("product.read")
+        self.can_create_products = auth_state.has_permission("product.create")
+        self.can_update_products = auth_state.has_permission("product.update")
+        self.can_activate_products = self.can_update_products
+        self.can_inactivate_products = auth_state.has_permission("product.inactivate")
+        return token, auth_state.is_authenticated
 
     @staticmethod
     def _category_option(item: dict[str, Any], *, disabled: bool = False) -> dict[str, str]:
@@ -296,10 +332,21 @@ class ProductsState(rx.State):
         return {"id": category_id, "label": label, "disabled": "true" if disabled else "false"}
 
     @staticmethod
-    def _supplier_option(item: dict[str, Any]) -> dict[str, str]:
+    def _supplier_option(
+        item: dict[str, Any], *, current: bool = False
+    ) -> dict[str, str]:
         supplier_id = str(item.get("id", ""))
         label = str(item.get("nome_razao_social") or f"Fornecedor (ID {supplier_id})")
-        return {"id": supplier_id, "label": label, "disabled": "false"}
+        is_active = item.get("status") == "ativo"
+        if not is_active:
+            state_label = "inativo — vínculo atual" if current else "inativo"
+            label = f"{label} ({state_label})"
+        return {
+            "id": supplier_id,
+            "label": label,
+            "disabled": "false" if is_active else "true",
+            "status": "ativo" if is_active else "inativo",
+        }
 
     async def _load_categories(self, token: str, current_category_id: int | None = None):
         response = await auth_client.list_categories(token, page=1, per_page=100, status="ativo")
@@ -326,20 +373,36 @@ class ProductsState(rx.State):
         return self.category_options
 
     async def _load_suppliers(self, token: str, current_supplier_id: int | None = None):
-        response = await auth_client.list_suppliers(token, page=1, per_page=100)
-        items = [item for item in response["items"] if isinstance(item, dict) and item.get("id") is not None]
+        response = await auth_client.list_suppliers(
+            token, page=1, per_page=100, status="ativo"
+        )
+        items = [
+            item for item in response["items"]
+            if isinstance(item, dict)
+            and item.get("id") is not None
+            and item.get("status") == "ativo"
+        ]
         self.supplier_options = [
             {"id": "none", "label": "Sem fornecedor padrão", "disabled": "false"},
             *(self._supplier_option(item) for item in items),
         ]
         self.supplier_page = 1
         self.supplier_has_more = len(response["items"]) == 100
-        if current_supplier_id is not None and not any(
+        if current_supplier_id == 0:
+            self.supplier_options.append({
+                "id": "0",
+                "label": "Fornecedor padrão inválido (ID 0)",
+                "disabled": "true",
+                "status": "inativo",
+            })
+        elif current_supplier_id is not None and current_supplier_id > 0 and not any(
             option["id"] == str(current_supplier_id) for option in self.supplier_options
         ):
             try:
                 current = await auth_client.get_supplier(token, current_supplier_id)
-                self.supplier_options.append(self._supplier_option(current))
+                self.supplier_options.append(
+                    self._supplier_option(current, current=True)
+                )
             except XanoRequestError as exc:
                 if exc.error_code != "NOT_FOUND":
                     raise
@@ -353,7 +416,7 @@ class ProductsState(rx.State):
     async def load_more_categories(self):
         if self.category_loading_more or not self.category_has_more:
             return
-        token, _, authenticated = await self._session()
+        token, authenticated = await self._session()
         if not token or not authenticated:
             return
         self.category_loading_more = True
@@ -376,17 +439,22 @@ class ProductsState(rx.State):
     async def load_more_suppliers(self):
         if self.supplier_loading_more or not self.supplier_has_more:
             return
-        token, _, authenticated = await self._session()
+        token, authenticated = await self._session()
         if not token or not authenticated:
             return
         self.supplier_loading_more = True
         try:
             page = self.supplier_page + 1
-            response = await auth_client.list_suppliers(token, page=page, per_page=100)
+            response = await auth_client.list_suppliers(
+                token, page=page, per_page=100, status="ativo"
+            )
             known = {option["id"] for option in self.supplier_options}
             new_items = [
                 self._supplier_option(item) for item in response["items"]
-                if isinstance(item, dict) and item.get("id") is not None and str(item["id"]) not in known
+                if isinstance(item, dict)
+                and item.get("id") is not None
+                and item.get("status") == "ativo"
+                and str(item["id"]) not in known
             ]
             self.supplier_options.extend(new_items)
             self.supplier_page = page
@@ -398,30 +466,23 @@ class ProductsState(rx.State):
 
     async def load_products(self):
         self.is_loading = True
-        self.can_manage_products = False
+        self.can_read_products = False
+        self.can_create_products = False
+        self.can_update_products = False
         self.error_message = ""
         self.has_products = False
         self.products = []
         yield
-        token, profile_id, is_authenticated = await self._session()
+        token, is_authenticated = await self._session()
         if not token or not is_authenticated:
             self.is_loading = False
             return
-        self.can_manage_products = profile_id in (1, 2)
+        if not self.can_read_products:
+            self.error_message = "Você não tem permissão para consultar produtos."
+            self.is_loading = False
+            return
         try:
             response = await auth_client.list_products(token, page=1, per_page=100)
-            categories = []
-            category_page = 1
-            while True:
-                categories_response = await auth_client.list_categories(
-                    token, page=category_page, per_page=100
-                )
-                category_items = categories_response["items"]
-                categories.extend(category_items)
-                if len(category_items) < 100:
-                    break
-                category_page += 1
-
             stock_items = []
             stock_page = 1
             while True:
@@ -434,20 +495,13 @@ class ProductsState(rx.State):
                     break
                 stock_page += 1
 
-            category_names = {
-                str(category["id"]): str(category["nome"])
-                for category in categories
-                if isinstance(category, dict)
-                and category.get("id") is not None
-                and category.get("nome")
-            }
             stock_by_product = {
                 str(stock["product_id"]): stock
                 for stock in stock_items
                 if isinstance(stock, dict) and stock.get("product_id") is not None
             }
             self.products = [
-                _map_product_to_list_item(item, category_names, stock_by_product)
+                _map_product_to_list_item(item, stock_by_product)
                 for item in response["items"]
                 if isinstance(item, dict)
             ]
@@ -468,14 +522,13 @@ class ProductsState(rx.State):
         self.category_error_message = ""
         self.supplier_error_message = ""
         self.success_message = ""
-        self.can_manage_products = False
+        self.can_create_products = False
         yield
-        token, profile_id, is_authenticated = await self._session()
-        if not token or not is_authenticated or profile_id not in (1, 2):
+        token, is_authenticated = await self._session()
+        if not token or not is_authenticated or not self.can_create_products:
             self.is_loading = False
-            self.error_message = "Seu perfil não está autorizado a criar produtos."
+            self.error_message = "Você não tem permissão para criar produtos."
             return
-        self.can_manage_products = True
         try:
             await self._load_categories(token)
         except (XanoError, XanoRequestError) as exc:
@@ -503,12 +556,12 @@ class ProductsState(rx.State):
     async def create_product(self):
         self.error_message = ""
         self.success_message = ""
-        token, profile_id, is_authenticated = await self._session()
+        token, is_authenticated = await self._session()
         if not token or not is_authenticated:
             self.error_message = "Sua sessão não está ativa. Faça login novamente."
             return
-        if profile_id not in (1, 2):
-            self.error_message = "Seu perfil não está autorizado a criar produtos."
+        if not self.can_create_products:
+            self.error_message = "Você não tem permissão para criar produtos."
             return
         category_id = _selected_category_id(self.category_selection)
         minimum = _parse_minimum(self.estoque_minimo)
@@ -518,7 +571,9 @@ class ProductsState(rx.State):
         available_supplier_ids = {
             option["id"]
             for option in self.supplier_options
-            if option.get("id") != "none" and option.get("disabled") == "false"
+            if option.get("id") != "none"
+            and option.get("disabled") == "false"
+            and option.get("status") == "ativo"
         }
         if self.supplier_selection != "none" and self.supplier_selection not in available_supplier_ids:
             self.error_message = "Selecione um fornecedor disponível ou Sem fornecedor padrão."
@@ -539,6 +594,10 @@ class ProductsState(rx.State):
         self.is_saving = True
         yield
         try:
+            if self.supplier_selection != "none" and not await self._validate_active_supplier(
+                token, int(self.supplier_selection)
+            ):
+                return
             await auth_client.create_product(token, payload)
             yield rx.redirect("/produtos")
         except XanoRequestError as exc:
@@ -570,7 +629,7 @@ class ProductsState(rx.State):
 
     async def load_edit_form(self):
         self.is_loading = True
-        self.can_manage_products = False
+        self.can_update_products = False
         self.has_loaded_product = False
         self.error_message = ""
         self.category_error_message = ""
@@ -578,12 +637,11 @@ class ProductsState(rx.State):
         self.success_message = ""
         self.original_product = {}
         yield
-        token, profile_id, is_authenticated = await self._session()
-        if not token or not is_authenticated or profile_id not in (1, 2):
+        token, is_authenticated = await self._session()
+        if not token or not is_authenticated or not self.can_update_products:
             self.is_loading = False
-            self.error_message = "Seu perfil não está autorizado a editar produtos."
+            self.error_message = "Você não tem permissão para editar produtos."
             return
-        self.can_manage_products = True
         route_parts = str(self.router.url.path).strip("/").split("/")
         if len(route_parts) != 3 or route_parts[0] != "produtos" or route_parts[2] != "editar":
             self.is_loading = False
@@ -636,7 +694,11 @@ class ProductsState(rx.State):
                 if current_supplier_id is not None:
                     self.supplier_options.append({
                         "id": str(current_supplier_id),
-                        "label": f"Fornecedor atual (ID {current_supplier_id})",
+                        "label": (
+                            "Fornecedor padrão inválido (ID 0)"
+                            if current_supplier_id == 0
+                            else f"Fornecedor atual (ID {current_supplier_id})"
+                        ),
                         "disabled": "true",
                     })
                 self.supplier_has_more = False
@@ -669,12 +731,12 @@ class ProductsState(rx.State):
     async def update_product(self):
         self.error_message = ""
         self.success_message = ""
-        token, profile_id, is_authenticated = await self._session()
+        token, is_authenticated = await self._session()
         if not token or not is_authenticated or not self.has_loaded_product:
             self.error_message = "Sua sessão não está ativa. Faça login novamente."
             return
-        if profile_id not in (1, 2):
-            self.error_message = "Seu perfil não está autorizado a editar produtos."
+        if not self.can_update_products:
+            self.error_message = "Você não tem permissão para editar produtos."
             return
         category_id = _selected_category_id(self.category_selection)
         minimum = _parse_minimum(self.estoque_minimo)
@@ -702,7 +764,9 @@ class ProductsState(rx.State):
             available_supplier_ids = {
                 option["id"]
                 for option in self.supplier_options
-                if option.get("id") != "none" and option.get("disabled") == "false"
+                if option.get("id") != "none"
+                and option.get("disabled") == "false"
+                and option.get("status") == "ativo"
             }
             if self.supplier_selection not in available_supplier_ids:
                 self.error_message = "Selecione um fornecedor disponível ou Sem fornecedor padrão."
@@ -722,11 +786,27 @@ class ProductsState(rx.State):
         if not payload and not status_changed:
             self.error_message = "Nenhuma alteração foi informada."
             return
+        if status_changed:
+            if self.original_product_status == "ativo" and self.current_product_status == "inativo":
+                if not self.can_inactivate_products:
+                    self.error_message = "Você não tem permissão para inativar produtos."
+                    return
+            elif self.original_product_status == "inativo" and self.current_product_status == "ativo":
+                if not self.can_activate_products:
+                    self.error_message = "Você não tem permissão para ativar produtos."
+                    return
+            else:
+                self.error_message = "O status selecionado não é válido para este produto."
+                return
 
         self.is_saving = True
         yield
         fields_update_completed = False
         try:
+            if "fornecedor_padrao_id" in payload and not await self._validate_active_supplier(
+                token, int(payload["fornecedor_padrao_id"])
+            ):
+                return
             if payload:
                 await auth_client.update_product(token, self.product_id, payload)
                 fields_update_completed = True
@@ -761,15 +841,22 @@ class ProductsState(rx.State):
     async def change_product_status(self):
         self.error_message = ""
         self.success_message = ""
+        token, is_authenticated = await self._session()
+        if not token or not is_authenticated:
+            self.error_message = "Sua sessão não está ativa. Faça login novamente."
+            return
         if not self.has_loaded_product:
             self.error_message = "Carregue um produto antes de alterar o status."
             return
-        if not self.can_manage_products:
-            self.error_message = "Seu perfil não está autorizado a alterar o status do produto."
-            return
         if self.current_product_status == "ativo":
+            if self.original_product_status == "ativo" and not self.can_inactivate_products:
+                self.error_message = "Você não tem permissão para inativar produtos."
+                return
             self.current_product_status = "inativo"
         elif self.current_product_status == "inativo":
+            if self.original_product_status == "inativo" and not self.can_activate_products:
+                self.error_message = "Você não tem permissão para ativar produtos."
+                return
             self.current_product_status = "ativo"
         else:
             self.error_message = "O status atual do produto não é válido."
@@ -803,7 +890,7 @@ def _product_row(product: dict[str, str]) -> rx.Component:
         rx.text(product["status"], padding_x="12px", text_align="center"),
         rx.center(
             rx.cond(
-                ProductsState.can_manage_products,
+                ProductsState.can_update_products,
                 rx.link("Editar", href=f"/produtos/{product['id']}/editar"),
                 rx.text("—"),
             ),
@@ -955,7 +1042,7 @@ def produtos() -> rx.Component:
                     background="white",
                 ),
                 rx.spacer(),
-                rx.cond(ProductsState.can_manage_products, rx.link(rx.button("Novo produto"), href="/produtos/novo"), rx.text("")),
+                rx.cond(ProductsState.can_create_products, rx.link(rx.button("Novo produto"), href="/produtos/novo"), rx.text("")),
                 width="100%",
             ),
             section(
@@ -1066,7 +1153,7 @@ def editar_produto() -> rx.Component:
             "Dados do produto",
             rx.vstack(
                 rx.cond(ProductsState.is_loading, rx.text("Carregando produto..."), rx.text(f"Status atual: {ProductsState.current_product_status}")),
-                rx.cond(ProductsState.can_manage_products & ProductsState.has_loaded_product, _status_action(), rx.text("")),
+                rx.cond(ProductsState.can_change_product_status, _status_action(), rx.text("")),
                 _product_form(is_edit=True),
                 width="100%",
                 align="stretch",

@@ -15,7 +15,11 @@ query "movements" verb=GET {
 
   stack {
     function.run "Inventory/authorize_permission" {
-      input = {user_id: $auth.id, permission_code: "stock.read"}
+      input = {
+        user_id: $auth.id,
+        permission_code: "movement.read",
+        alternate_permission_code: "report.read"
+      }
     } as $authorization
 
     precondition ($input.tipo == null || $input.tipo == "entrada" || $input.tipo == "saida") {

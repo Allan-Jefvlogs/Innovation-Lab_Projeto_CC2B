@@ -9,7 +9,7 @@ from .pages.fornecedores import SupplierState, fornecedores
 from .pages.estoque import StockState, estoque
 from .pages.movimentacoes import EntryState, ExitState, MovementHistoryState, historico, entrada, saida
 from .pages.usuarios import UserState, usuarios
-from .pages.perfis import perfis
+from .pages.perfis import PermissionState, perfis
 from .pages.relatorios import ReportState, relatorios
 from .state import AuthState
 
@@ -32,5 +32,5 @@ app.add_page(historico, route="/movimentacoes", title="Histórico | NexStock", o
 app.add_page(entrada, route="/movimentacoes/entradas", title="Entrada | NexStock", on_load=EntryState.load_entry_page)
 app.add_page(saida, route="/movimentacoes/saidas", title="Saída | NexStock", on_load=ExitState.load_exit_page)
 app.add_page(usuarios, route="/usuarios", title="Usuários | NexStock", on_load=UserState.load_page)
-app.add_page(perfis, route="/perfis", title="Perfis | NexStock", on_load=AuthState.require_auth)
+app.add_page(perfis, route="/perfis", title="Perfis | NexStock", on_load=PermissionState.load_page)
 app.add_page(relatorios, route="/relatorios", title="Relatórios | NexStock", on_load=ReportState.load_page)

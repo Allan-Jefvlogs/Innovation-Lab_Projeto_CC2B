@@ -3,43 +3,30 @@ import reflex as rx
 from ..state import AuthState
 
 
-MENU_LIDER = [
-    ("Dashboard", "/dashboard"),
-    ("Produtos", "/produtos"),
-    ("Categorias", "/categorias"),
-    ("Fornecedores", "/fornecedores"),
-    ("Estoque", "/estoque"),
-    ("Entradas", "/movimentacoes/entradas"),
-    ("Saídas", "/movimentacoes/saidas"),
-    ("Histórico", "/movimentacoes"),
-    ("Relatórios", "/relatorios"),
-    ("Usuários", "/usuarios"),
-    ("Perfis e permissões", "/perfis"),
+MENU_LINKS = [
+    ("Dashboard", "/dashboard", None, False),
+    ("Produtos", "/produtos", "product.read", False),
+    ("Categorias", "/categorias", "category.read", False),
+    ("Fornecedores", "/fornecedores", "supplier.read", False),
+    ("Estoque", "/estoque", "stock.read", False),
+    ("Entradas", "/movimentacoes/entradas", "stock.entry", False),
+    ("Saídas", "/movimentacoes/saidas", "stock.exit", False),
+    ("Histórico", "/movimentacoes", "movement.read", False),
+    ("Relatórios", "/relatorios", "report.read", False),
+    ("Usuários", "/usuarios", None, True),
+    ("Perfis e permissões", "/perfis", None, True),
 ]
 
-
-MENU_ALMOXARIFE = [
-    ("Dashboard", "/dashboard"),
-    ("Produtos", "/produtos"),
-    ("Categorias", "/categorias"),
-    ("Fornecedores", "/fornecedores"),
-    ("Estoque", "/estoque"),
-    ("Entradas", "/movimentacoes/entradas"),
-    ("Saídas", "/movimentacoes/saidas"),
-    ("Histórico", "/movimentacoes"),
-    ("Relatórios", "/relatorios"),
-]
-
-
-MENU_AUXILIAR = [
-    ("Dashboard", "/dashboard"),
-    ("Produtos", "/produtos"),
-    ("Categorias", "/categorias"),
-    ("Fornecedores", "/fornecedores"),
-    ("Estoque", "/estoque"),
-    ("Histórico", "/movimentacoes"),
-    ("Relatórios", "/relatorios"),
-]
+PERMISSION_VISIBILITY = {
+    "product.read": AuthState.can_read_products,
+    "category.read": AuthState.can_read_categories,
+    "supplier.read": AuthState.can_read_suppliers,
+    "stock.read": AuthState.can_read_stock,
+    "stock.entry": AuthState.can_stock_entry,
+    "stock.exit": AuthState.can_stock_exit,
+    "movement.read": AuthState.can_read_movements,
+    "report.read": AuthState.can_read_reports,
+}
 
 
 def nav_item(label: str, href: str) -> rx.Component:
@@ -52,9 +39,20 @@ def nav_item(label: str, href: str) -> rx.Component:
         _hover={"background": "#f1f1f1"},
     )
 
-def menu_items(items: list[tuple[str, str]]) -> rx.Component:
+def menu_items() -> rx.Component:
     return rx.vstack(
-        *[nav_item(label, href) for label, href in items],
+        *[
+            rx.cond(
+                AuthState.is_administrator
+                if admin_only
+                else (AuthState.is_administrator | PERMISSION_VISIBILITY[permission])
+                if permission
+                else True,
+                nav_item(label, href),
+                rx.fragment(),
+            )
+            for label, href, permission, admin_only in MENU_LINKS
+        ],
         width="100%",
         align="stretch",
         spacing="1",
@@ -67,13 +65,7 @@ def sidebar() -> rx.Component:
             rx.text("Sistema de Gerenciamento", size="2", color="#666"),
             rx.divider(),
 
-            rx.match(
-                AuthState.inventory_profile_id,
-                (1, menu_items(MENU_LIDER)),
-                (2, menu_items(MENU_ALMOXARIFE)),
-                (3, menu_items(MENU_AUXILIAR)),
-                menu_items([]),
-            ),
+            menu_items(),
 
             rx.spacer(),
 

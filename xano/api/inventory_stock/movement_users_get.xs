@@ -9,7 +9,7 @@ query "movement_users" verb=GET {
 
   stack {
     function.run "Inventory/authorize_permission" {
-      input = {user_id: $auth.id, permission_code: "stock.read"}
+      input = {user_id: $auth.id, permission_code: "movement.read"}
     } as $authorization
 
     db.query "user" {

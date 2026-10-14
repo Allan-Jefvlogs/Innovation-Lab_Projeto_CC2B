@@ -39,7 +39,7 @@ query "users/by_id/{user_id}/inactivate" verb=PATCH {
     conditional {
       if ($target_user.inventory_profile_id == $leader_profile.id) {
         db.query "user" {
-          where = $db.user.inventory_profile_id == $leader_profile.id && ($db.user.is_active == true || $db.user.is_active == null) && $db.user.id != $target_user.id
+          where = $db.user.inventory_profile_id == $leader_profile.id && $db.user.is_active !== false && $db.user.id != $target_user.id
           return = {type: "exists"}
         } as $has_other_active_leader
         precondition ($has_other_active_leader) {

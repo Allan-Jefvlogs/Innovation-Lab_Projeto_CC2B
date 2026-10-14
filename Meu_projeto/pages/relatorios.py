@@ -187,7 +187,7 @@ class ReportState(rx.State):
                 self.supplier_has_more = False
 
     async def _load_products(self, token: str):
-        response = await auth_client.list_products(token, page=1, per_page=100)
+        response = await auth_client.list_report_options(token, "product", page=1, per_page=100)
         self.product_options = []
         self.product_options.extend(
             self._product_option(item)
@@ -198,7 +198,7 @@ class ReportState(rx.State):
         self.product_has_more = len(response["items"]) == 100
 
     async def _load_suppliers(self, token: str):
-        response = await auth_client.list_suppliers(token, page=1, per_page=100)
+        response = await auth_client.list_report_options(token, "supplier", page=1, per_page=100)
         self.supplier_options = []
         self.supplier_options.extend(
             self._supplier_option(item)
@@ -217,7 +217,7 @@ class ReportState(rx.State):
         self.product_loading_more = True
         try:
             page = self.product_page + 1
-            response = await auth_client.list_products(token, page=page, per_page=100)
+            response = await auth_client.list_report_options(token, "product", page=page, per_page=100)
             known = {item["id"] for item in self.product_options}
             self.product_options.extend(
                 self._product_option(item)
@@ -247,7 +247,7 @@ class ReportState(rx.State):
         self.supplier_loading_more = True
         try:
             page = self.supplier_page + 1
-            response = await auth_client.list_suppliers(token, page=page, per_page=100)
+            response = await auth_client.list_report_options(token, "supplier", page=page, per_page=100)
             known = {item["id"] for item in self.supplier_options}
             self.supplier_options.extend(
                 self._supplier_option(item)

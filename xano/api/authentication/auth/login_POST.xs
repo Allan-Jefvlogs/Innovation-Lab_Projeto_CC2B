@@ -42,7 +42,7 @@ query "auth/login" verb=POST {
       error = "Invalid Credentials."
     }
 
-    precondition ($user.is_active == true || $user.is_active == null) {
+    precondition ($user.is_active !== false) {
       error_type = "accessdenied"
       error = "USER_INACTIVE"
     }

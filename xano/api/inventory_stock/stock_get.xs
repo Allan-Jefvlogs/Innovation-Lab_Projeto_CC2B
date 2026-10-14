@@ -25,12 +25,26 @@ query "stock" verb=GET {
           table: "product",
           type: "inner",
           where: $db.inventory_stock.product_id == $db.product.id
+        },
+        category: {
+          table: "category",
+          type: "left",
+          where: $db.product.categoria_id == $db.category.id
+        },
+        supplier: {
+          table: "supplier",
+          type: "left",
+          where: $db.product.fornecedor_padrao_id == $db.supplier.id
         }
       }
       eval = {
         codigo: $db.product.codigo,
         nome: $db.product.nome,
-        estoque_minimo: $db.product.estoque_minimo
+        estoque_minimo: $db.product.estoque_minimo,
+        categoria_id: $db.product.categoria_id,
+        categoria_nome: $db.category.nome,
+        fornecedor_padrao_id: $db.product.fornecedor_padrao_id,
+        fornecedor_nome: $db.supplier.nome_razao_social
       }
       where = ($input.situacao == null || ($input.situacao == "sem_estoque" && $db.inventory_stock.quantidade_disponivel == 0) || ($input.situacao == "abaixo_minimo" && $db.inventory_stock.quantidade_disponivel > 0 && $db.inventory_stock.quantidade_disponivel < $db.product.estoque_minimo) || ($input.situacao == "normal" && $db.inventory_stock.quantidade_disponivel > 0 && $db.inventory_stock.quantidade_disponivel >= $db.product.estoque_minimo)) && ($input.search == null || $input.search == "" || $db.product.codigo includes $input.search || $db.product.nome includes $input.search)
       sort = {product_id: "asc"}
@@ -74,6 +88,10 @@ query "stock" verb=GET {
             product_id: $stock_item.product_id,
             codigo: $stock_item.codigo,
             nome: $stock_item.nome,
+            categoria_id: $stock_item.categoria_id,
+            categoria_nome: $stock_item.categoria_nome,
+            fornecedor_padrao_id: $stock_item.fornecedor_padrao_id,
+            fornecedor_nome: $stock_item.fornecedor_nome,
             quantidade_disponivel: $stock_item.quantidade_disponivel,
             estoque_minimo: $stock_item.estoque_minimo,
             situacao_estoque: $situacao_estoque

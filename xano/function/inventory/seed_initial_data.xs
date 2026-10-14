@@ -27,7 +27,9 @@ function "Inventory/seed_initial_data" {
         {code: "supplier.inactivate", resource: "supplier", action: "inactivate"},
         {code: "stock.read", resource: "stock", action: "read"},
         {code: "stock.entry", resource: "stock", action: "entry"},
-        {code: "stock.exit", resource: "stock", action: "exit"}
+        {code: "stock.exit", resource: "stock", action: "exit"},
+        {code: "movement.read", resource: "movement", action: "read"},
+        {code: "report.read", resource: "report", action: "read"}
       ]
     }
 
@@ -47,6 +49,10 @@ function "Inventory/seed_initial_data" {
         {profile_code: "read_only", permission_code: "supplier.read"},
         {profile_code: "stockkeeper", permission_code: "stock.read"},
         {profile_code: "read_only", permission_code: "stock.read"},
+        {profile_code: "stockkeeper", permission_code: "movement.read"},
+        {profile_code: "read_only", permission_code: "movement.read"},
+        {profile_code: "stockkeeper", permission_code: "report.read"},
+        {profile_code: "read_only", permission_code: "report.read"},
         {profile_code: "stockkeeper", permission_code: "stock.entry"},
         {profile_code: "stockkeeper", permission_code: "stock.exit"}
       ]
@@ -129,5 +135,5 @@ function "Inventory/seed_initial_data" {
     }
   }
 
-  response = {success: true, profiles: 3, permissions: 15, editable_grants: 16}
+  response = {success: true, profiles: 3, permissions: 17, editable_grants: 20}
 }
