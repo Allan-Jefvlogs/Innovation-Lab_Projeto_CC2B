@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 
 from Meu_projeto.pages.movimentacoes import MovementHistoryState
 from Meu_projeto.pages.produtos import ProductsState
+from Meu_projeto.pages import produtos as products_module
 from Meu_projeto.services.xano_client import XanoPermissionError
 from Meu_projeto.state.auth import AuthState, _required_route_permission
 
@@ -33,12 +34,15 @@ def _auth_state(
         "is_authenticated": True,
         "is_loading": False,
         "error_message": "",
+        "session_validation": "valid",
+        "session_retry_after_epoch": 0.0,
     }.items():
         setattr(state, name, value)
     return state
 
 
 def _products_state(**values) -> ProductsState:
+    products_module._cache_clear()
     state = object.__new__(ProductsState)
     object.__setattr__(state, "dirty_vars", set())
     defaults = {
@@ -46,11 +50,18 @@ def _products_state(**values) -> ProductsState:
         "is_saving": False,
         "is_status_loading": False,
         "can_read_products": False,
+        "can_read_categories": False,
+        "can_read_suppliers": False,
         "can_create_products": False,
         "can_update_products": False,
         "can_activate_products": False,
         "can_inactivate_products": False,
         "has_loaded_product": False,
+        "edit_load_failed": False,
+        "can_retry_edit_load": False,
+        "products_stale": False,
+        "products_status_message": "",
+        "products_session_fingerprint": "",
         "has_products": False,
         "products": [],
         "error_message": "",

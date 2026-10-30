@@ -27,7 +27,7 @@ def searchable_select(
     on_load_more: Any = None,
     placeholder: str,
     placeholder_color: str | None = None,
-    empty_message: str = "Nenhuma opção encontrada.",
+    empty_message: str | rx.Var[str] = "Nenhuma opção encontrada.",
 ) -> rx.Component:
     """Combobox simples com filtro local e carregamento explícito de páginas."""
 

@@ -27,7 +27,7 @@ query "report_options" verb=GET {
         db.query product {
           sort = {codigo: "asc", id: "asc"}
           return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
-          output = ["id", "codigo", "nome"]
+          output = ["items.id", "items.codigo", "items.nome"]
         } as $product_options_page
 
         var $product_items {
@@ -54,7 +54,7 @@ query "report_options" verb=GET {
         db.query supplier {
           sort = {nome_razao_social: "asc", id: "asc"}
           return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
-          output = ["id", "nome_razao_social"]
+          output = ["items.id", "items.nome_razao_social"]
         } as $supplier_options_page
 
         var $supplier_items {

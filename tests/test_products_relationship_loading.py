@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, PropertyMock, patch
 
+from Meu_projeto.pages import produtos as products_module
 from Meu_projeto.pages.produtos import ProductsState, auth_client
 
 
@@ -23,9 +24,13 @@ def _state() -> ProductsState:
         "supplier_dropdown_open": False, "supplier_error_message": "",
         "is_loading": False, "is_saving": False,
         "can_read_products": True, "can_create_products": False,
+        "can_read_categories": True, "can_read_suppliers": True,
         "can_update_products": True, "can_activate_products": True,
         "can_inactivate_products": False,
         "has_loaded_product": False, "has_products": False, "products": [],
+        "edit_load_failed": False, "can_retry_edit_load": False,
+        "products_stale": False, "products_status_message": "",
+        "products_session_fingerprint": "",
         "error_message": "", "success_message": "",
         "original_product": {}, "codigo": "", "nome": "", "descricao": "",
         "unidade_medida": "", "estoque_minimo": "", "product_id": 0,
@@ -36,6 +41,8 @@ def _state() -> ProductsState:
 
     async def authorized_session():
         state.can_read_products = True
+        state.can_read_categories = True
+        state.can_read_suppliers = True
         state.can_update_products = True
         state.can_activate_products = True
         return "fake-token", True
@@ -61,6 +68,12 @@ def _page(items: list[dict[str, object]]) -> dict[str, object]:
 
 
 class ProductRelationshipPaginationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        products_module._cache_clear()
+
+    def tearDown(self):
+        products_module._cache_clear()
+
     async def test_product_without_stock_row_shows_missing_balance(self) -> None:
         state = _state()
         products_response = _page([{

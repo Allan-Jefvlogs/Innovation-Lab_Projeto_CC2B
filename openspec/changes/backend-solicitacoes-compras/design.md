@@ -1,0 +1,338 @@
+# Design: backend de Solicitações de Compras
+
+## Estado local relevante
+
+- `inventory_stock` possui um saldo por Produto e índice único em `product_id` no artefato local.
+- `GET /stock` exige `stock.read`; separa `abaixo_minimo` (saldo positivo menor que o mínimo) de `sem_estoque` e não filtra Produtos inativos.
+- `POST /entries` exige `stock.entry`, grava o saldo e `inventory_movement` dentro de `db.transaction`; hoje não possui vínculo com uma Solicitação de Compra.
+- `inventory_movement` é a fonte de histórico de Entradas e Saídas. Não criar outra tabela de movimentação.
+- Não existe tabela, grant nem contrato local de `purchase_request` nesta auditoria.
+
+Esses contratos locais não provam que scripts futuros estejam publicados ou que uma propriedade concorrente esteja garantida no workspace remoto.
+
+## Modelo proposto
+
+`purchase_request` deve conter, no mínimo:
+
+| Campo | Uso |
+|---|---|
+| `id` | Identificador persistente. |
+| `produto_id` | Referência ao Produto. |
+| `quantidade_solicitada` | Decimal maior que zero. |
+| `quantidade_recebida` | Decimal calculada a partir de Entradas confirmadas vinculadas; não editável livremente pelo cliente. |
+| `urgencia` | `baixa`, `normal`, `alta` ou `critica`. |
+| `solicitante_usuario_id` | Usuário autenticado que criou a solicitação. Não aceitar do payload. |
+| `status` | Um dos estados de negócio definidos nesta Change. |
+| `email_status` | `pendente`, `enviado` ou `falhou`; na primeira fase permanece `pendente`, sem alegar envio. |
+| `chave_idempotencia` | Chave da tentativa de criação, com restrição única a validar. |
+| `data_criacao`, `data_atualizacao` | Timestamps controlados pelo servidor. |
+| `data_encerramento` | Nulo enquanto ativa; preenchido apenas em estado terminal autorizado. |
+| `active_product_id` | Candidato opcional para índice único enquanto o pedido está ativo; preencher com `produto_id` nos estados ativos e limpar nos terminais. Nulabilidade, índice e comportamento real ainda não foram confirmados na instância. |
+
+O histórico de solicitações deve registrar eventos imutáveis com ID do pedido, ator autenticado, estado anterior e novo, ação, data/hora do servidor e justificativa quando aplicável. Reenvio idempotente não cria evento de criação duplicado.
+
+### Preparação local desta etapa
+
+Foram criados localmente `xano/table/purchase_request.xs` e `xano/table/purchase_request_history.xs`. A primeira estrutura contém os campos de solicitação, enumerações de estado/urgência/e-mail, chave idempotente e índices candidatos; a segunda registra ator, evento, justificativa, detalhes e data do evento. Ambos passaram pela validação sintática do Xano Developer MCP. Nenhuma tabela foi criada no workspace.
+
+O MCP disponível informou a versão **2.2.6** do servidor MCP. O documento XanoScript fornecido pelo MCP traz versão **2.7.1**; esses valores identificam ferramentas/documentação, não a versão runtime do workspace. A documentação confirma sintaxe de campo opcional e índice `btree|unique`, e os scripts locais existentes usam índices únicos. Isso comprova a forma estrutural usada nos artefatos, mas não comprova no workspace que vários `active_product_id = null` serão aceitos, nem que conflitos simultâneos serão retornados/tratados como esperado. **A semântica e a eficácia dos índices continuam pendentes de validação na instância.**
+
+Os filtros `min:0` das colunas decimais permitem zero; o POST deverá validar quantidade solicitada estritamente maior que zero, quantidade recebida entre zero e a solicitada e urgência/estados pelas transições permitidas. O XanoScript de tabela não expressa sozinho as regras de Produto ativo, saldo insuficiente, transição, ator autenticado, grants ou sincronização de recebimento.
+
+Para idempotência, o endpoint compara os campos persistidos (`solicitante_usuario_id`, `produto_id`, `quantidade_solicitada` e `urgencia`) quando encontra a mesma `chave_idempotencia`; não é necessário armazenar um hash redundante. Reuso da chave com outro ator ou conteúdo é rejeitado sem devolver o registro existente. A restrição única da chave e o tratamento do conflito ainda dependem de confirmação na instância Xano.
+
+Para associar recebimentos, avaliar adicionar `purchase_request_id` opcional a `inventory_movement` e ao contrato de Entrada. O vínculo só pode ser gravado junto da Entrada confirmada. A quantidade recebida deve ser derivada das movimentações `entrada` confirmadas associadas; o endpoint de Solicitações não altera `inventory_stock` diretamente.
+
+## Elegibilidade e estados
+
+Um Produto pode receber solicitação somente se estiver ativo, possuir linha de estoque e satisfizer `quantidade_disponivel == 0` ou `quantidade_disponivel < estoque_minimo`. Saldo ausente é erro de integridade, não saldo zero. O frontend não decide elegibilidade.
+
+Estados ativos que bloqueiam nova solicitação: `aberta`, `em_analise`, `aprovada`, `em_compra`, `aguardando_recebimento` e `recebimento_parcial`. Estados `cancelada` e `rejeitada` são terminais e liberam nova solicitação se o Produto continuar insuficiente. `concluida` exige recebimento confirmado integral por Entradas vinculadas; recebimento parcial mantém o pedido ativo. A chegada de e-mail nunca conclui uma compra.
+
+`email_status` não altera a atividade do pedido. Como o envio não existe nesta fase, a criação grava `pendente` e a resposta/UI devem dizer que o pedido foi registrado e que nenhum e-mail foi enviado.
+
+Sugestão de quantidade: `estoque_minimo - quantidade_disponivel` quando positiva; para saldo zero e mínimo zero, uma unidade. A quantidade enviada continua editável e o Xano valida que é positiva. A unidade segue a unidade cadastrada no Produto.
+
+## Contratos backend
+
+- `GET /stock/replenishment`: retorna páginas separadas de Produtos ativos insuficientes sem solicitação ativa e Produtos insuficientes com solicitação ativa. A decisão aprovada para a página completa exige ambos `stock.read` e `purchase_request.read`; os alertas gerais e a consulta normal de estoque continuam no contrato próprio de `stock.read`.
+- `GET /purchase_requests`: acompanhamento paginado e filtros por estado/Produto/data. Deve expor apenas os campos de negócio necessários; não expor chave idempotente nem a coluna de controle `active_product_id`.
+- `GET /purchase_requests/by_id/{request_id}`: detalhe mais histórico paginado, também com projeção explícita, preservando ator, evento, justificativa, dados de auditoria e data.
+- `GET /purchase_requests/summary`: contagem dos estados ativos, independentemente de `email_status`.
+- `POST /purchase_requests`: aceita `produto_id`, quantidade, urgência e chave de idempotência; deriva solicitante do token; revalida Produto ativo, saldo presente e insuficiente e ausência de pedido ativo. O backend gera datas, estado e histórico.
+- `PATCH /purchase_requests/by_id/{id}/cancel`: cancelamento persistido apenas em transição permitida, com autorização e auditoria. Cancelar o formulário antes do POST não chama este endpoint.
+- Operação de gestão de estado: apenas transições explicitamente autorizadas e auditadas; não aceitar `concluida` diretamente do cliente.
+- Integração com `POST /entries`: uma Entrada vinculada a pedido valida Produto e estado, grava o vínculo de movimento e contabiliza recebimento na mesma fronteira de escrita. O saldo só muda pela Entrada confirmada. Falhas parciais e rollback precisam de teste isolado.
+
+O schema local de `inventory_movement` e o contrato de `POST /entries` ainda não contêm referência a Solicitação. Eles foram preservados nesta etapa, pois a alteração do fluxo de Entrada está fora do escopo solicitado agora. Uma próxima implementação terá de decidir a ligação imutável entre movimentação confirmada e solicitação antes de declarar recebimento parcial/integral funcional.
+
+Os contratos acima existem somente nos arquivos locais e passaram pela validação sintática MCP. O payload de resposta dos três GETs de solicitação agora é projetado explicitamente; as listas de reposição também selecionam apenas campos de Produto/estoque e o status/ID de solicitação necessários à interface. Ainda não há comparação ou execução desses endpoints no workspace publicado.
+
+## Permissões propostas
+
+- `purchase_request.read`: lista, detalhes e contagem de pedidos.
+- `purchase_request.create`: criar solicitação; além de `stock.read` para consultar a fila de reposição.
+- `purchase_request.cancel`: cancelar pedido persistido permitido; a política proposta permite ao solicitante cancelar seu pedido, e a `purchase_request.manage` permite gestão autorizada. Confirmar a regra de propriedade antes de implementar.
+- `purchase_request.manage`: aprovar, rejeitar e mover estados de gestão.
+- `purchase_request.receive` (opcional): avaliar se a ligação a recebimento precisa de grant próprio além de `stock.entry`; não conceder grants automaticamente.
+
+Os endpoints locais de leitura usam `purchase_request.read`, a criação usa `purchase_request.create`, e a reposição exige `stock.read` junto de `purchase_request.read`, conforme decisão funcional registrada nesta etapa. Cancelamento e gestão ainda não têm endpoints locais; quando implementados deverão validar `purchase_request.cancel` e `purchase_request.manage`. A interface apenas oculta ações e não substitui a validação Xano. Nenhum código foi adicionado ao catálogo remoto e nenhum grant foi concedido.
+
+O autorizador central procura `inventory_permission.code`; para perfis não administradores, código inexistente gera `PERMISSION_CATALOG_INVALID`, e código existente sem associação ao perfil gera `PERMISSION_DENIED`. Assim, os códigos serão reconhecidos quando forem provisionados, sem que isso conceda acesso. `GET /permissions` é protegido como administrador e permite conferir o catálogo; o PATCH de matriz de perfil substitui associações existentes e não deve ser usado para cadastrar os códigos. O `seed_initial_data` local inclui atribuições iniciais de outros grants, portanto não deve ser executado para esta implantação. O provisionamento deve inserir somente as quatro linhas de catálogo (`purchase_request.read/create/cancel/manage`) por procedimento administrativo revisado, sem linhas em `inventory_profile_permission`.
+
+## Idempotência e concorrência
+
+Na versão local registrada em 2026-10-18, o POST consultava primeiro `chave_idempotencia`; uma tentativa equivalente reutilizava a projeção encontrada, enquanto outro ator ou payload recebia `IDEMPOTENCY_KEY_REUSED`. A consulta de `active_product_id` e a releitura após erro também estavam presentes. Essa descrição é histórica e foi ampliada na revisão local de 2026-10-19, abaixo. A unicidade e o comportamento após timeout continuam sem exercício no Xano.
+
+O POST grava pedido e evento `criada` dentro de uma transação e não escreve saldo. Isso expressa atomicidade pretendida no script, mas o rollback deve ser testado no Xano.
+
+**Risco concorrente ainda não resolvido:** a versão anterior lia Produto, saldo e solicitação ativa antes do `db.transaction`. A revisão local de 2026-10-19 moveu essas releituras para dentro da transação padrão, antes das inserções, mas não demonstrou que isso coordene com desativação de Produto ou alteração de saldo por Entrada/Saída. Sem protocolo comum entre escritores e sem teste concorrente isolado, não há garantia comprovada de elegibilidade estável ou prevenção de overselling/solicitação indevida.
+
+O documento Database do Xano Developer MCP (snapshot de documentação 2.7.1) descreve `db.transaction` com opção de isolamento `serializable`, além de `repeatable_read` e `read_committed`. Não encontrei nessa referência mecanismo XanoScript de bloqueio explícito de linha ou update condicional por saldo anterior. A existência na documentação não confirma que a instância aceita a opção, nem que o isolamento serializável do POST coordene corretamente com os endpoints existentes de Produtos, Entradas e Saídas, que usam transações sem um protocolo comum de concorrência. Como esses endpoints existentes estão fora deste escopo, **não há nesta etapa mecanismo comprovado que garanta elegibilidade estável frente a todas as escritas concorrentes**. O POST permanece não aprovado para publicação até se definir e validar um protocolo compatível com todos esses escritores.
+
+Além disso, a prevenção de duas solicitações simultâneas depende do índice único `active_product_id`, da semântica de múltiplos valores nulos nos registros terminais e do erro concreto retornado quando há conflito. Nenhum desses comportamentos foi testado na instância. Consulta + INSERT e transação, isoladamente, não constituem prova. O Xano Free desta conta não oferece Sandbox/Data Source adicional aprovada; não executar concorrência nem falha induzida no datasource compartilhado.
+
+## E-mail e recebimento
+
+E-mail é fase posterior. Não criar destinatário fictício nem chamar serviço de e-mail nesta Change. Falha futura de e-mail mantém pedido ativo e auditável.
+
+Recebimento parcial mantém o pedido ativo. Somente Entradas Xano confirmadas e vinculadas alteram `quantidade_recebida` e o saldo. Cancelamento/rejeição preserva histórico. Ao fechar legitimamente o pedido, recalcular elegibilidade a partir do saldo atual; se ainda insuficiente, o Produto volta à lista de elegíveis.
+
+## Cache e limite de requisições
+
+Reutilizar o coordenador e `SessionReadCache` existentes, sempre isolando por sessão e parâmetros. Nenhuma entrada de cache autoriza POST, cancelamento, mudança de estado ou recebimento. Escritas confirmadas invalidam `stock/replenishment`, `purchase_requests/summary` e dados de acompanhamento da sessão. Falhas não atualizam cache como sucesso. Sem polling; atualização por navegação/ação manual após sucesso. O Dashboard deve ficar dentro do orçamento local de 7 requisições em 20 segundos; o limite Xano é compartilhado e pode gerar 429 mesmo assim.
+
+## Implementação local de consulta e criação (2026-10-18)
+
+Foram adicionados localmente, sem publicação:
+
+- `GET /purchase_requests`: exige `purchase_request.read`, filtra por status, Produto e intervalo de criação, e pagina até 100 itens por página; cada item inclui código e nome do Produto.
+- `GET /purchase_requests/by_id/{request_id}`: exige `purchase_request.read`, retorna solicitação, dados básicos do Produto e histórico paginado.
+- `GET /purchase_requests/summary`: exige `purchase_request.read` e conta os seis estados de negócio ativos; `email_status` não altera a contagem.
+- `GET /stock/replenishment`: exige `stock.read` e `purchase_request.read`, separa em páginas independentes Produtos elegíveis e insuficientes com solicitação ativa. Considera apenas Produto ativo e saldo zero ou positivo abaixo do mínimo.
+- `POST /purchase_requests`: exige `purchase_request.create`; revalida Produto e saldo no Xano, deriva solicitante de `$auth.id`, valida quantidade/urgência, persiste estado `aberta`, e-mail `pendente` e evento `criada` na mesma transação. Não escreve em `inventory_stock` nem cria `inventory_movement`.
+
+Antes de montar as listas de reposição, a consulta procura Produtos ativos sem linha `inventory_stock`; se encontrar algum, retorna erro explícito `STOCK_BALANCE_NOT_FOUND` e não converte ausência de saldo em zero. A existência de um pedido apenas separa `a_solicitar` e `compra_ja_solicitada`; o pedido não remove o Produto da consulta normal de estoque.
+
+As respostas das consultas de solicitações agora usam allowlists: incluem os campos de negócio e auditoria necessários, mas omitem `chave_idempotencia` e `active_product_id`. As listas de reposição também têm projeção explícita: Produto/estoque nas duas listas e, em `compra_ja_solicitada`, ID, quantidade, urgência, status e data da solicitação. A decisão de autorização para reposição é exigir `stock.read` e `purchase_request.read` em conjunto; os alertas gerais permanecem acessíveis pelo endpoint de estoque e sua permissão própria.
+
+O POST procura primeiro a chave idempotente. Repetição pelo mesmo usuário e com os mesmos campos retorna uma projeção do registro anterior; reuso com outro usuário ou payload diferente é rejeitado sem revelar a solicitação. Também consulta `active_product_id` antes da inserção e, se a escrita falhar, tenta reler a chave ou o pedido ativo para traduzir o conflito em erro de negócio. A criação do pedido e o evento de histórico são agrupados em `db.transaction` e não tocam no saldo.
+
+**Limites não resolvidos:** elegibilidade é lida antes da transação; mudanças simultâneas de Produto/estoque podem ultrapassar a validação. O índice único de `active_product_id` e a unicidade da chave estão somente no schema local; sua aceitação, a semântica de múltiplos valores nulos, a forma dos conflitos e a recuperação após colisão ainda não foram testadas no workspace. Não declarar prevenção concorrente nem idempotência runtime comprovadas. O projeto não dispõe de Sandbox/Data Source adicional aprovado no Xano Free. O catálogo remoto não foi atualizado; até existirem os códigos, o autorizador central rejeita grants novos como `PERMISSION_CATALOG_INVALID`. Nenhum grant foi concedido.
+
+### Verificações estruturais locais e testes pendentes
+
+| Caso | Resposta/comportamento esperado | Evidência possível agora |
+|---|---|---|
+| Projeções, filtros, paginação e guards presentes | Contrato fonte contém os campos/condições previstos | Testes Python estruturais locais e MCP; não é execução Xano |
+| Produto inativo/normal/sem saldo, quantidade e urgência inválidas | Rejeição sem escrita | Guardas verificadas estaticamente; runtime pendente |
+| Mesma chave, mesmo conteúdo / conteúdo diferente / outro ator | Recupera registro ou rejeita sem expor | Comparações verificadas estaticamente; runtime pendente |
+| Falta de permission code / grant | Autorizador central rejeita | Fluxo inspecionado; codes/grants não provisionados no workspace |
+| Pedido/histórico atômicos, saldo inalterado | Transação pretendida, sem instruções de escrita de estoque | Verificação estática; rollback e invariantes runtime pendentes |
+| Duas chamadas simultâneas ou mudança concorrente de Produto/estoque | Uma criação elegível e no máximo um pedido ativo | Não comprovado; depende de protocolo compartilhado e Xano isolado |
+
+`tests/test_purchase_request_xanoscript_contracts.py` contém verificações estruturais dos arquivos: allowlists de resposta, paginação/filtros, grants exigidos, guardas de elegibilidade, comparação de idempotência, transação com histórico e ausência de escrita em estoque/movimentações. São testes estáticos locais; não executam XanoScript, mocks de banco, autorização remota, rollback, índices ou concorrência. O MCP valida sintaxe, não executa esses cenários.
+
+## Testes e limites
+
+Ainda não existem mocks que executem os endpoints localmente. Os testes Python existentes são verificações estruturais e não executam XanoScript, autorização remota, índices, transações, rollback ou concorrência.
+
+## Decisão de escopo acadêmico e preparação de publicação (2026-10-25)
+
+O Xano continua sendo o backend e banco de dados obrigatório. Por decisão informada pelo projeto, a ausência de Sandbox/Data Source separado no plano Free e a não execução de testes avançados de concorrência, isolamento serializável e rollback induzido não impedem o aceite acadêmico. Isso é uma decisão de escopo, não evidência de que essas propriedades funcionem. As regras de unicidade, idempotência, validação de estoque e transação continuam no contrato; os riscos que não foram demonstrados permanecem explicitamente listados abaixo.
+
+### Contratos locais revisados
+
+- `POST /purchase_requests` exige autenticação e `purchase_request.create`; aceita `produto_id`, `quantidade_solicitada`, `urgencia` e `chave_idempotencia`. Quantidade deve ser positiva; urgência aceita `baixa`, `normal`, `alta` ou `critica`. O solicitante é `$auth.id`, o Produto deve estar ativo e ter linha de estoque com saldo zero ou positivo abaixo do mínimo. Saldo ausente é `STOCK_BALANCE_NOT_FOUND`. A solicitação começa em `aberta`/`pendente`, e o histórico recebe `criada`. A chave repetida pelo mesmo usuário com mesmo Produto, quantidade e urgência reutiliza a solicitação; conteúdo incompatível gera `IDEMPOTENCY_KEY_REUSED`. A resposta expõe dados públicos, a indicação `repeticao_idempotente` e `email_enviado: false`; não expõe chave idempotente nem chave de controle. O script não altera `inventory_stock` nem cria `inventory_movement`.
+- `PATCH /purchase_requests/by_id/{request_id}/cancel` exige autenticação e `purchase_request.cancel` ou `purchase_request.manage`. O solicitante pode cancelar a própria solicitação; para solicitação de outra pessoa, o endpoint exige `purchase_request.manage`. Exige justificativa não vazia e permite somente `aberta` ou `em_analise`. Define estado `cancelada`, limpa `active_product_id`, grava timestamps e evento `cancelada` com `$auth.id` e justificativa. Não altera estoque, movimentos nem e-mail.
+- Os campos escritos correspondem aos schemas locais `purchase_request` e `purchase_request_history`: referências a Produto/Usuário, decimal de quantidade, enums de urgência/status/e-mail/evento, timestamps, justificativa e dados JSON. Os erros de domínio estão definidos no script, mas o status HTTP efetivo de cada caminho não foi validado no endpoint publicado.
+- A função central `Inventory/authorize_permission` valida o código no catálogo, os grants do perfil e o bypass canônico `administrator`. A validação sintática local inclui essa função. Não foram alterados catálogo ou associações de grants nesta etapa.
+
+Esta compatibilidade foi conferida contra os schemas e contratos locais. O Xano Developer MCP disponível valida sintaxe, mas não lê a configuração publicada nem os dados do workspace. O usuário já havia informado anteriormente que as tabelas e os índices UNIQUE de `chave_idempotencia` e `active_product_id`, com `active_product_id` anulável, foram conferidos no painel. Essa é evidência histórica informada pelo usuário; não foi reconfirmada remotamente nesta execução. Ela não comprova o comportamento de colisões, a semântica de múltiplos NULL, rollback ou concorrência.
+
+### Limitações técnicas preservadas
+
+- O POST revalida Produto, saldo e solicitação ativa dentro de `db.transaction`, mas o isolamento padrão não prova que a elegibilidade permaneça estável contra Entradas, Saídas, alteração de Produto ou outro POST concorrente.
+- Os índices UNIQUE são a barreira final pretendida para chave e Produto ativo; o tratamento de colisão e a releitura após conflito não foram exercitados em runtime. A semântica de vários `active_product_id = null` também não foi comprovada por teste no banco.
+- O PATCH relê o estado dentro da transação, mas usa `db.edit` por ID, não compare-and-set. Cancelamentos concorrentes ou disputa com futura gestão/recebimento podem não produzir uma única transição auditada; esse comportamento não foi testado.
+- Os writes de pedido e histórico estão no mesmo bloco `db.transaction`; nenhum teste de falha induzida demonstrou rollback no workspace. A ausência de instruções de escrita de estoque nos scripts foi verificada estaticamente, mas o efeito completo deve ser confirmado no teste funcional controlado.
+- Erros como `PURCHASE_REQUEST_ALREADY_ACTIVE`, `IDEMPOTENCY_KEY_REUSED`, `PURCHASE_REQUEST_CANCEL_CONFLICT` e os erros de validação são nomes de domínio definidos no código. Não se deve documentá-los como códigos HTTP específicos antes de observar a resposta publicada.
+
+Esses testes avançados (requisições simultâneas, isolamento serializável e rollback induzido) ficam fora dos critérios obrigatórios da entrega acadêmica. Permanecem como limitações conhecidas e não podem ser descritos como aprovados. Não executar testes concorrentes ou falhas induzidas no datasource compartilhado.
+
+### Sequência segura de publicação controlada
+
+Nenhuma publicação ou escrita remota foi feita nesta etapa. Antes de cada push, confirmar visualmente workspace `152211`, branch `v1`, e revisar que o preview contenha somente o endpoint selecionado. A CLI documenta `--dry-run` e `--include`; os comandos abaixo são apenas para uso futuro e **não foram executados**:
+
+```powershell
+xano workspace push --dry-run -w 152211 -b v1 -d .\xano -i "api/inventory_stock/purchase_requests_by_id_cancel_patch.xs"
+xano workspace push --dry-run -w 152211 -b v1 -d .\xano -i "api/inventory_stock/purchase_requests_post.xs"
+```
+
+1. Fazer e preservar um pull/export somente de leitura do workspace/branch antes da implantação; conferir schema e índices atuais. Se a CLI voltar a falhar com `uv_os_get_passwd returned ENOMEM`, parar e usar o editor do Xano para revisar/exportar; não substituir por push geral.
+2. Rodar e revisar o primeiro dry-run seletivo. Após aprovação própria da publicação, publicar somente PATCH de cancelamento. Não incluir tabelas, funções, catálogo/grants, outras APIs ou POST.
+3. Validar autenticação/grant e disponibilidade da rota sem criar linha: escolher por leitura um ID que não existe e chamar PATCH com justificativa de teste; resultado esperado é `PURCHASE_REQUEST_NOT_FOUND` (ou erro HTTP equivalente a confirmar), sem alteração de dados. Também conferir os GETs existentes. Isso valida roteamento/guardas básicas, não o caminho de cancelamento bem-sucedido.
+4. Rodar e revisar o segundo dry-run seletivo e, após aprovação própria, publicar somente POST.
+5. Só então, com autorização para escrita no datasource compartilhado, usar um Produto exclusivamente fictício e identificado para o teste, com saldo insuficiente preparado por fluxo autorizado. Não usar Produto real. Criar uma solicitação com chave idempotente registrada localmente para aquela tentativa; conferir resposta, detalhe/histórico, resumo, Reposição e saldo/movimentos inalterados. Repetir exatamente a mesma chave e payload uma vez para verificar a resposta idempotente sequencial, sem teste simultâneo.
+6. Cancelar a solicitação de teste como o mesmo usuário autorizado, com justificativa explícita. Conferir estado terminal, histórico, liberação para “A solicitar”, persistência dos alertas/contagem de estoque insuficiente e ausência de alteração de saldo/movimentos. Manter o histórico de auditoria; se o Produto de teste foi criado para o ensaio, inativá-lo por fluxo autorizado após verificar que não há pedido ativo. Não apagar registros de histórico.
+7. Somente após esses resultados integrar o formulário Reflex: envio único em andamento, chave persistente por tentativa ambígua, sem gerar outra chave automaticamente, invalidar caches após sucesso e tratar erros observados. Por fim validar visualmente Reposição e Dashboard.
+
+O plano não inclui duas sessões concorrentes, rollback induzido, isolamento serializável nem teste em datasource isolado. Se qualquer erro inesperado ocorrer, interromper novas tentativas, consultar primeiro a solicitação pela chave já utilizada e preservar o registro/histórico para reconciliação; não reenviar com nova chave automaticamente.
+
+## Ajuste local do contrato de Reposição (2026-10-19)
+
+`GET /stock/replenishment` continua local e sem escrita. Ambas as listas têm paginação e totais independentes: `a_solicitar` usa `page`/`per_page`; `compra_ja_solicitada` usa `requested_page`/`requested_per_page`. A autorização continua exigindo `stock.read` e `purchase_request.read` antes das consultas.
+
+As duas consultas limitam-se a Produtos ativos com uma linha de estoque cujo saldo seja zero ou positivo e inferior ao mínimo. Zero é classificado como `sem_estoque`, inclusive quando o mínimo também é zero; saldo positivo inferior ao mínimo é `abaixo_minimo`. Saldo suficiente não passa pelo filtro. A verificação inicial de Produtos ativos sem linha em `inventory_stock` continua produzindo `STOCK_BALANCE_NOT_FOUND`, sem converter ausência em zero. Solicitação ativa só separa as listas; não altera a elegibilidade geral de estoque nem remove o Produto dos alertas.
+
+A projeção pública de `compra_ja_solicitada.items` agora contém `produto_id`, `codigo`, `nome`, `unidade_medida`, `quantidade_disponivel`, `estoque_minimo`, `situacao_estoque`, `solicitacao_id`, `quantidade_solicitada`, `urgencia`, `solicitacao_status` e `data_criacao_solicitacao`. O join associa `active_product_id` e filtra os seis estados ativos definidos nesta Change. O ID e os dados da solicitação vêm desse registro associado na mesma consulta paginada; não foi introduzida consulta por item. `chave_idempotencia` e `active_product_id` não fazem parte da projeção. `a_solicitar.items` contém somente os campos públicos de Produto/estoque e situação necessários à lista elegível.
+
+A associação usa o join por `active_product_id`; a unicidade dessa chave está declarada como índice candidato no schema local. Portanto, a ausência de Produtos duplicados depende de esse índice e do preenchimento correto de `active_product_id` estarem configurados no Xano. Isso ainda não foi verificado no workspace nem em runtime; não é uma garantia concorrente comprovada. O endpoint foi validado localmente por sintaxe e testes estruturais, não foi publicado e não foi chamado no Xano.
+
+## Revisão local de segurança do POST (2026-10-19)
+
+O artefato local `purchase_requests_post.xs` foi revisto para uma fase de fortalecimento, sem publicação ou escrita remota. A validação do grant `purchase_request.create`, quantidade positiva, urgência permitida e identificação do solicitante por `$auth.id` permanece no endpoint. A mesma chave idempotente é comparada por solicitante, Produto, quantidade e urgência; reuso incompatível é rejeitado sem incluir a chave na resposta.
+
+Para novas tentativas, o POST agora reconsulta dentro de `db.transaction` a chave de idempotência, o Produto, o saldo e a solicitação ativa antes de inserir. A solicitação e o evento `criada` continuam no mesmo bloco transacional. O script não escreve em `inventory_stock` nem em `inventory_movement`. Erros de criação não devolvem `$error.message`; o fluxo tenta classificar uma colisão por releitura da chave ou do Produto ativo e, se não encontrar correspondência, retorna `PURCHASE_REQUEST_CREATE_FAILED`.
+
+O Xano Developer MCP validou sintaticamente o arquivo local do POST sem avisos. Essa validação não executa o endpoint nem verifica transações, índices, rollback, códigos HTTP ou concorrência. A opção de isolamento `serializable`, embora apareça na referência de XanoScript consultada anteriormente, foi rejeitada pelo validador MCP instalado nas formas testadas; o artefato permanece com o isolamento padrão de `db.transaction`. Portanto, não se afirma isolamento serializável.
+
+**Limites que mantêm o POST bloqueado para publicação:** não foi confirmado no workspace v1 se os índices únicos de `chave_idempotencia` e `active_product_id` existem e impõem a unicidade esperada; a aceitação de múltiplos `active_product_id = null`, o erro gerado por colisão e a releitura de uma gravação concorrente também não foram exercitados. A transação local agrupa pedido e histórico, mas rollback após falha do histórico não foi demonstrado em runtime. Tampouco existe protocolo comum comprovado entre este POST e os escritores existentes de Produto, Entrada e Saída; colocar leituras dentro da transação padrão não demonstra que a elegibilidade não possa mudar concorrentemente.
+
+Os testes ampliados em `tests/test_purchase_request_xanoscript_contracts.py` são verificadores estruturais do código-fonte: cobrem ordem das releituras, validações, identidade autenticada, tratamento previsto de conflitos e ausência de escrita de estoque. Eles não são simulações do motor Xano nem testes comportamentais de rollback ou concorrência. Os critérios completos da tarefa 3.3 e os itens da seção 4 permanecem pendentes; nenhuma tarefa OpenSpec foi marcada nesta revisão.
+
+## Cancelamento local de solicitação (2026-10-19)
+
+Foi criado localmente `PATCH /purchase_requests/by_id/{request_id}/cancel` em `purchase_requests_by_id_cancel_patch.xs`; não existia outro endpoint local de cancelamento. O endpoint exige autenticação, chama o autorizador central com `purchase_request.cancel` e `purchase_request.manage` como alternativa, e deriva ator do histórico exclusivamente de `$auth.id`. Conforme a política proposta anteriormente, o autor pode cancelar sua própria solicitação; para cancelar solicitação de outro autor, o endpoint exige também `purchase_request.manage`. O bypass administrativo continua no autorizador canônico. A política de propriedade e o conjunto de estados ainda estão sujeitos à revisão funcional da tarefa 1.1.
+
+Como regra conservadora local, somente `aberta` e `em_analise` podem ser canceladas. `aprovada`, `em_compra`, `aguardando_recebimento` e `recebimento_parcial` não são canceláveis por este contrato; `concluida`, `cancelada` e `rejeitada` também não podem ser canceladas novamente. A justificativa é obrigatória e aparada; a enumeração local de histórico já contém o evento `cancelada`. Em uma transação, o endpoint relê a solicitação, compara seu status com a leitura usada para autorização, valida elegibilidade, altera status e timestamps, limpa `active_product_id` e registra ator, justificativa e status anterior/novo. A resposta projeta apenas os campos públicos da solicitação e a justificativa. Não escreve em `inventory_stock`, não cria `inventory_movement` e não envia e-mail.
+
+O XanoScript MCP validou o arquivo local sem avisos. A documentação MCP descreve `db.bulk.update` com filtro, mas o validador instalado rejeitou `where` nesse comando no endpoint (incluindo um exemplo mínimo), então não foi usada uma forma de atualização condicional não aceita pela ferramenta. O endpoint usa o `db.edit` de registro único após reler e validar dentro da transação. Essa leitura seguida de edição **não é compare-and-set**: dois cancelamentos simultâneos podem ler um estado elegível antes que qualquer um finalize e ambos podem tentar gravar evento. Também não foi comprovado protocolo comum com operações futuras de gestão/recebimento. A transação expressa a intenção de manter atualização e histórico atômicos, mas falha no histórico e rollback não foram executados no Xano.
+
+Erros de domínio definidos localmente: `INVALID_REQUEST_ID`, `INVALID_JUSTIFICATION`, `PURCHASE_REQUEST_NOT_FOUND`, `PURCHASE_REQUEST_ALREADY_CANCELLED`, `PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE`, `PURCHASE_REQUEST_CANCEL_CONFLICT` (quando a releitura transacional observa status diferente do snapshot inicial) e `PURCHASE_REQUEST_CANCEL_FAILED`. O autorizador central continua responsável por erros de acesso. Os tipos de erro declarados pelo Xano permitem classificar entradas inválidas como `inputerror` e ausência como `notfound`; não foi validado o status HTTP efetivo para erros lançados no fluxo, nem o mapeamento remoto de todos os erros de domínio. 429 permanece sob o tratamento do Xano/plataforma; nenhum retry foi adicionado.
+
+Os testes em `tests/test_purchase_request_xanoscript_contracts.py` verificam rota, grants, propriedade, estados, justificativa, ordem reler/atualizar/historizar, limpeza da chave ativa, projeção e ausência de mutação de estoque. São testes estruturais do script, não simulações do banco. Uma falha de histórico, rollback, dupla tentativa concorrente e conflito com mudança de estado/recebimento continuam exigindo execução isolada real.
+
+A tarefa 3.4 permanece desmarcada: ela inclui também operações de gestão, e a política/status de cancelamento, concorrência, rollback, erros HTTP e runtime não estão integralmente comprovados. A implementação não foi publicada e nenhum botão do Reflex foi conectado.
+
+## Compatibilidade do importador Xano para cancelamento (2026-10-25)
+
+Após um dry-run seletivo aprovado, o push remoto do endpoint PATCH foi rejeitado com HTTP 400 durante a análise de `throw {`, indicando `Invalid kind for name - assign`. O endpoint local continha seis blocos `throw` com `name = ...` e `value = ...`. A documentação XanoScript e o MCP local aceitam essa forma, e ela também aparece em scripts de cadastros; portanto, há divergência observada entre a validação local/documentação disponível e o importador remoto. A mensagem aponta para a atribuição `name =` dentro do objeto de erro, mas não permite distinguir se a incompatibilidade é esse campo ou a construção `throw` completa. Nenhum segundo push foi feito para experimentar essa distinção.
+
+Para evitar repetir a construção que o importador rejeitou, o endpoint local agora guarda os erros de domínio surgidos durante a transação em `$cancel_error` e os apresenta depois da transação por `precondition`, com os códigos preservados no campo `error`: ausência como `notfound`, estado inválido/conflitante como `inputerror` e falha inesperada como `standard`. A autorização `purchase_request.manage` para pedido de outro solicitante é verificada após a leitura de propriedade e antes da transação, preservando o bloqueio sem capturar a falha de autorização como falha genérica de cancelamento. Status canceláveis, justificativa, atualização do pedido, `active_product_id`, histórico, projeção de resposta e ausência de escrita em estoque/movimentos permanecem os mesmos.
+
+O teste estrutural verifica que este endpoint não reintroduza `throw {` ou atribuição `name =` e que os códigos de erro estejam mapeados por `precondition`. O POST local contém construções `throw` semelhantes, mas não foi alterado por estar fora do escopo desta correção; sua compatibilidade deverá ser verificada separadamente antes de publicá-lo. A validação MCP confirma apenas sintaxe local; a aceitação pelo importador remoto só poderá ser confirmada por novo dry-run seletivo, que não foi executado nesta etapa. A resposta/status HTTP remoto também permanece sem validação.
+
+## Compatibilidade do importador Xano para criação (2026-10-25)
+
+O POST local continha `throw { name = ..., value = ... }`, padrão estruturalmente semelhante ao que o importador remoto rejeitou no PATCH. As construções foram removidas localmente. Os erros de domínio agora são guardados em `$creation_error` antes de qualquer escrita e mapeados por `precondition` depois da transação. Idempotência com payload incompatível, Produto/estoque inválido e solicitação ativa não executam os inserts.
+
+O `db.add purchase_request` e o `db.add purchase_request_history` permanecem no mesmo `db.transaction`. O `try_catch` está ao redor da transação, não dentro dela: uma falha de gravação propaga-se ao limite transacional antes de o `catch` classificar a falha e fazer leituras de reconciliação. A documentação XanoScript consultada descreve transações como atômicas (tudo ou nada). Isso sustenta a estrutura local, mas não é um teste de rollback induzido no workspace e não comprova concorrência, isolamento ou o comportamento remoto dos índices.
+
+A validação MCP local e os testes estruturais confirmam sintaxe e forma do contrato; não comprovam aceitação pelo importador remoto, publicação ou runtime. Nenhuma escrita remota foi executada. Próximo passo: revisar um dry-run seletivo contendo somente `api/inventory_stock/purchase_requests_post.xs`. Os testes avançados de concorrência e rollback induzido seguem fora do escopo acadêmico e não estão marcados como aprovados.
+
+## Confirmação runtime de criação e cancelamento pela interface (2026-10-26)
+
+O usuário confirmou que, pela interface Reflex ligada ao Xano workspace 152211, branch `v1`, criou a solicitação ID 2 para “Produto Teste”, quantidade 15 KG e urgência alta. A resposta apresentou status inicial `aberta` e a solicitação foi exibida na lista de compras solicitadas. Em seguida, o usuário confirmou o cancelamento pelo fluxo de interface: o backend confirmou a operação, a interface mostrou sucesso e a solicitação deixou a lista ativa. Trata-se de confirmação manual de runtime fornecida pelo usuário, não de execução realizada pelo agente.
+
+Essa evidência demonstra um caminho funcional de criação e um de cancelamento no ambiente publicado. Não demonstra idempotência após repetição/timeout, tratamento de conflito, autorização negativa, concorrência, rollback induzido ou todos os códigos HTTP de domínio. Para a solicitação ID 2, não foi inspecionado independentemente o evento `cancelada` em `purchase_request_history`, a limpeza de `active_product_id` ou a ausência de alteração em saldo/movimentações; esses itens seguem pendentes de reconciliação. O teste manual também não substitui a validação completa de respostas, erros, paginação e autorização prevista para os contratos.
+
+Com base no relato de que os endpoints publicados foram exercitados pela interface e nos registros de publicação/runtime dos contratos GET já documentados nesta Change, a tarefa 4.4 (“Validar runtime no Xano e registrar versão/contrato publicado”) é considerada atendida para o aceite documental desta verificação. A evidência mantém a identificação do destino e das rotas sem credenciais. A tarefa 3.3 permanece pendente porque não foram exercitadas as condições de idempotência e falhas do POST; a tarefa 3.4 permanece pendente porque cobre também gestão/transições e auditoria mais amplas. Os testes avançados de concorrência e rollback continuam fora do escopo acadêmico, sem serem declarados comprovados.
+
+## Destinatário comercial de e-mail — preparação local (2026-10-26)
+
+Auditoria dos contratos locais: `purchase_request` continha `email_status` (`pendente`, `enviado`, `falhou`) e `chave_idempotencia`, mas ainda não guardava o destinatário. O POST comparava solicitante, Produto, quantidade e urgência nas três verificações de idempotência. O PATCH altera somente estado, chave ativa e timestamps, além de inserir histórico; não tem envio de mensagem. Os GETs de lista, detalhe, resumo e Reposição usam projeções explícitas e não precisam devolver o e-mail para as telas atuais. Portanto, o destinatário será mantido fora dessas projeções para reduzir exposição; pedidos antigos continuam com o novo campo nulo.
+
+O schema local declara `email_destinatario` como texto anulável, sem default. Na preparação inicial, o POST local exigia o endereço; essa exigência foi substituída nesta etapa por um contrato de transição opcional e anulável. O input XanoScript usa tipo `email` com `trim`: quando o endereço é informado, a validação de tipo verifica o formato; uma precondition rejeita string vazia e tamanho acima de 254. Ausente/NULL é persistido como NULL. O valor, inclusive NULL, participa das três comparações de idempotência; repetir a chave com destinatário diferente continua incompatível. A resposta pública não ecoa o endereço. O estado inicial continua `email_status=pendente`; nenhum envio ou registro duplicado do endereço no histórico foi adicionado. O PATCH não toca o campo, logo o destinatário é preservado no desenho local.
+
+O usuário confirmou visualmente em 2026-10-26 que a coluna `email_destinatario` foi criada em `purchase_request` no workspace 152211, branch `v1`, e que os pedidos antigos IDs 1 e 2 foram preservados com destinatário NULL e `active_product_id` NULL. Essa confirmação não valida ainda o POST novo em runtime. O contrato de transição local aceita omissão/NULL para que a versão publicada continue compatível com o Reflex cuja flag `NEXSTOCK_PURCHASE_REQUEST_EMAIL_ENABLED` permanece desligada. Se a flag estiver ligada, o formulário exige endereço; ela só deve ser ativada depois que o POST opcional estiver publicado e funcionando. A obrigatoriedade backend é uma etapa posterior, após o formulário novo estar funcionando. Endereço preenchido não é enviado pelo Reflex enquanto a flag estiver desligada, pois a API publicada atual ainda não o persiste.
+
+Sequência futura: (1) coluna nullable já criada e conferida visualmente pelo usuário; (2) publicar o POST de transição que aceita campo ausente/NULL e validar o formato/limite, persistência e idempotência no Xano; (3) ativar o recurso Reflex e confirmar o formulário novo funcionando; (4) somente depois avaliar tornar o endereço obrigatório no backend; (5) testar com solicitação descartável autorizada e conferir pedidos antigos com NULL sem expor endereço em logs/listagens. Nesta etapa não houve publicação nem escrita remota.
+
+O `email_status` existente descreve somente a entrega original e `pendente` não é confirmação de envio. O histórico pode registrar que um evento ocorreu, mas não oferece por si só estados/retentativas independentes para duas entregas. Antes de envio real, recomenda-se uma tabela/outbox de entregas com tipo (pedido ou aviso de cancelamento), destinatário, estado, chave idempotente do provedor, referência de mensagem, timestamps e falha sanitizada. Aviso de cancelamento só será elegível se a entrega original estiver confirmada como `enviado`, usando o endereço salvo; cancelamento nunca alterará estoque. Provedor, credenciais protegidas, política de retry e integração permanecem pendentes.
+
+## Fase 2 — outbox e envio transacional (preparacao local, 2026-10-26)
+
+O schema local `purchase_request_email_delivery` separa o ciclo de cada mensagem do estado comercial da solicitacao. Cada linha identifica solicitacao e evento (`solicitacao` ou `cancelamento`), destinatario, estado, provedor, identificador da mensagem, chave de idempotencia, snapshot imutavel do payload, tentativas, ultima tentativa, confirmacao e codigo de erro sanitizado. Ha unicidade local por chave e por par solicitacao/evento. O destinatario e o snapshot estao marcados como sensiveis e nao sao projetados nos GETs atuais. Esta tabela ainda nao foi criada/publicada no workspace.
+
+O POST local inclui a intencao original no mesmo `db.transaction` da solicitacao e do evento `criada`, apenas quando `email_destinatario` existe. Uma repeticao idempotente recupera o pedido pelo caminho existente e nao cria outra entrega. Clientes legados sem destinatario continuam criando o pedido sem outbox; nao ha backfill para os pedidos antigos. Se persistir a intencao falhar, a transacao do pedido deve falhar junto. O endpoint nao chama HTTP externo.
+
+O PATCH local preserva o destinatario e, na mesma transacao que cancela e registra historico, cria no maximo uma intencao de cancelamento quando existe uma entrega original no outbox. `enviado` com identificador do provedor habilita estado `pendente`; estados `pendente`, `processando` e `indeterminado` criam uma intencao `aguardando_confirmacao_original`. Entrega original ausente (pedidos antigos), `falhou` ou `suprimido` nao geram aviso. A funcao interna revalida a entrega original antes de enviar o aviso. Nenhum caminho altera estoque.
+
+`Inventory/build_purchase_request_email_payload` monta snapshots em texto simples em portugues. O aviso de cancelamento nao inclui justificativa por padrao. O snapshot fixa destinatario, assunto e corpo para manter o payload idempotente; contem dados comerciais e deve permanecer acessivel somente ao backend. `Inventory/dispatch_purchase_request_email` e uma funcao interna, nao um endpoint publico e nao e chamada por POST/PATCH. Quando invocada futuramente, usa `api.request` para `POST https://api.resend.com/emails`, com `$env.RESEND_API_KEY`, `$env.RESEND_FROM_EMAIL` e a chave especifica da entrega. Ausencia de configuracao nao gera chamada. Os scripts locais foram validados por MCP; nenhuma funcao foi executada e nenhuma mensagem foi enviada.
+
+A classificacao local considera sucesso confirmado apenas 2xx com ID de mensagem; rejeicao explicita fica `falhou`; timeout, 5xx, 409 de solicitacao idempotente simultanea ou 2xx sem ID ficam `indeterminado`. Somente a entrega original atualiza `purchase_request.email_status` para `enviado` ou `falhou`; em resultado ambiguo permanece `pendente`. Nao existe retry automatico. O worker aceita somente `pendente`; itens `indeterminado` requerem reconciliacao manual no provedor antes de uma decisao. A idempotencia do Resend dura 24 horas, portanto nao e garantia permanente: apos esse periodo, uma repeticao exige verificar o historico do provedor primeiro.
+
+Risco residual: a mudanca de `pendente` para `processando` nao e um compare-and-swap comprovado no Xano. Duas invocacoes simultaneas podem chegar ao provedor; a chave do Resend e o payload fixo reduzem duplicacao, mas a resposta concorrente 409 fica ambigua. Nao ha garantia exactly-once, fila/trigger ativo, webhook de reconciliacao ou retry controlado demonstrado. O dispatcher permanece sem trigger e sem teste runtime. A validacao sintatica MCP e testes estruturais nao provam transacoes, indexes, chamadas externas ou comportamento do plano Free.
+
+Os status entregues e os codigos de erro persistidos sao allowlisted; corpo bruto, endereco em logs, Authorization, chave API e payload completo nao sao registrados. A credencial deve ser criada manualmente nas environment variables do Xano; a documentacao oficial descreve esse recurso para chaves externas, mas sua disponibilidade neste workspace Free ainda precisa ser confirmada no painel. Resend requer dominio proprio verificado e remetente correspondente. A chave nunca deve ser configurada no Reflex, Git ou logs.
+
+Sequencia futura: (1) revisar e publicar seletivamente a tabela e funcoes; (2) confirmar no workspace Free environment variables e configurar apenas os segredos no backend; (3) verificar dominio/remetente no Resend; (4) testar dispatcher com mocks no runner Xano sem envio, se os mocks forem executaveis sem publicar; (5) obter aprovacao expressa para um envio real controlado a destinatario de teste; (6) confirmar pedido, entrega, ID do provedor, cancelamento e aviso; (7) so entao planejar um trigger controlado. Nenhuma publicacao, configuracao ou escrita remota ocorreu nesta fase.
+
+
+
+## Revisao local de seguranca para publicacao controlada do Resend (2026-10-26)
+
+A revisao acrescentou uma protecao para o caso em que o cancelamento ocorre antes de comecar o despacho: se a entrega original ainda estiver `pendente`, o PATCH muda essa intencao para `suprimido` dentro da mesma transacao do cancelamento/historico e nao cria aviso de cancelamento. Se a entrega estiver `processando` ou `indeterminado`, o aviso permanece `aguardando_confirmacao_original`; nenhuma mensagem de cancelamento e enviada ate reconciliacao confirmar o original como enviado. Pedidos sem entrega original, inclusive registros antigos sem endereco, nao recebem backfill nem aviso.
+
+O dispatcher agora somente considera elegiveis entregas originais `pendente` e avisos `pendente`/`aguardando_confirmacao_original`; `processando`, `enviado`, `falhou`, `indeterminado` e `suprimido` nao iniciam outra chamada. Rejeicoes explicitas, timeout, HTTP 5xx/409 e respostas 2xx sem ID mantem as classificacoes existentes, sem retry automatico. Isso e protecao estrutural; o Xano nao oferece aqui uma reivindicacao compare-and-swap validada. Se PATCH e dispatcher executarem simultaneamente depois que o dispatcher passou pela verificacao de elegibilidade, uma chamada externa ainda pode estar em voo. Essa corrida permanece risco nao comprovado; o envio segue manual e sem trigger.
+
+Os snapshots agora congelam `from`, `to`, assunto e texto no momento em que a intencao e criada. `RESEND_REPLY_TO`, se nao vazio, e incluido como `reply_to` opcional no snapshot e no JSON enviado. A API Resend documenta `reply_to` como endereco ou lista de enderecos; a integracao usa um unico endereco string. Repeticoes mantem o mesmo conteudo e a mesma chave por evento. O Resend documenta que chaves de idempotencia do `POST /emails` expiram apos 24 horas e tem maximo de 256 caracteres; isso reduz duplicidade dentro da janela, mas nao garante entrega exactly-once nem substitui reconciliacao apos resultado ambiguo. Referencias: [Send Email - Resend](https://resend.com/docs/api-reference/emails/send-email) e [Idempotency Keys - Resend](https://resend.com/docs/dashboard/emails/idempotency-keys).
+
+O dispatcher falha fechado para a fase de teste: so chama Resend se `RESEND_API_KEY` existir, `RESEND_FROM_EMAIL` e o remetente salvo forem exatamente `onboarding@resend.dev`, e a variavel adicional `RESEND_ALLOWED_TEST_RECIPIENT` estiver definida e corresponder exatamente ao destinatario salvo no evento. Esta allowlist nova nao foi configurada no workspace e precisa ser adicionada pelo responsavel antes de qualquer execucao do dispatcher. O valor da chave nunca e lido, exibido ou registrado. `RESEND_REPLY_TO` e opcional e nao entra em respostas publicas/logs. Nenhum dos valores das variaveis foi inspecionado nesta revisao.
+
+A documentacao oficial do Resend mostra `onboarding@resend.dev` como remetente de exemplo e `delivered@resend.dev` como destinatario de teste que simula entrega; essa simulacao nao comprova recebimento numa caixa institucional ([Send Email - Resend](https://resend.com/docs/api-reference/emails/send-email), [Sending test emails - Resend](https://resend.com/changelog/sending-test-emails)). Portanto, a compatibilidade do remetente de teste com o destinatario institucional autorizado ainda nao foi comprovada. Antes do primeiro envio real controlado, confirmar no painel/documentacao da conta se esse destinatario pode ser usado; se nao puder, manter o dispatcher bloqueado ate uma configuracao de remetente permitida pelo Resend. Dominio proprio nao e assumido como requisito desta fase, mas o provedor pode impor restricoes ao destino.
+
+A chave Resend permanece apenas no segredo do Xano. O worker nao grava corpo bruto de resposta, Authorization ou mensagem de erro do provedor: persiste somente estado, ID retornado quando confirmado e codigo allowlisted. Endereco, assunto e corpo ficam no snapshot sensivel da outbox, sem projecao em GETs. A funcao interna nao e chamada pelo POST/PATCH nem automaticamente; nesta etapa nao houve publicacao, execucao de dispatcher ou envio.
+
+Verificacoes desta preparacao sao sintaticas/estruturais locais e testes estaticos/simulados XanoScript/Python. Nao provam transacao remota, indices, concorrencia, politica de remetente/destino, entrega real, webhooks, reconciliacao, nem atualizacao de `email_status` no workspace. As 3 variaveis mencionadas pelo usuario foram confirmadas no painel; a allowlist `RESEND_ALLOWED_TEST_RECIPIENT` e uma dependencia adicional ainda ausente.
+
+## Revisao de corrida entre cancelamento e dispatcher (2026-10-29)
+
+A regra local anterior que suprimia a entrega original quando o PATCH lia status `pendente` foi removida. `pendente` nao prova que o dispatcher ainda nao leu o registro: ele pode ter carregado esse estado e estar prestes a marcar `processando`. Agora, se existe entrega original em `pendente`, `processando` ou `indeterminado`, o PATCH registra na mesma transacao do cancelamento/historico uma unica intencao de aviso em `aguardando_confirmacao_original` e deixa o registro original intacto. A entrega original `enviado` com ID do provedor continua gerando aviso `pendente`; `falhou` ou `suprimido` nao gera aviso; ausencia de entrega original nao gera backfill.
+
+O dispatcher ja verifica o estado comercial do pedido antes de enviar uma entrega original. Se observar `cancelada`, suprime a entrega original e o aviso que estiver aguardando confirmacao. Se o cancelamento ocorrer depois dessa verificacao e a chamada externa avancar, nao ha mecanismo Xano comprovado nesta instalacao para cancelar a requisicao HTTP em voo nem compare-and-swap/lock validado entre PATCH e dispatcher. Nesse caso, o aviso continua aguardando: somente a confirmacao persistida `enviado` com ID permite libera-lo em execucao manual posterior; `falhou`/`suprimido` permite suprimir o aviso; `indeterminado` exige reconciliacao manual no Resend antes de qualquer decisao. Nao existe trigger, envio automatico ou retry automatico.
+
+A unicidade de `purchase_request_id` + `tipo_evento` e `chave_idempotencia` esta declarada no schema local e impede estruturalmente mais de uma intencao por evento se os indices estiverem aplicados. Colisao concorrente, transacao/rollback e sincronizacao de estado entre o banco e uma chamada externa nao foram testados no workspace. Esta alteracao reduz a janela de envio inconsistente e evita suprimir um original possivelmente em despacho, mas nao prova entrega exatamente uma vez nem cancelamento de chamada externa.
+
+Verificacao desta etapa: testes estruturais locais distinguem os estados e verificam que o PATCH nao suprime a entrega original pendente, nao chama o Resend e nao altera estoque. Validacao MCP, OpenSpec e testes estaticos nao comprovam concorrencia ou runtime no Xano Free. O PATCH atualizado ainda requer dry-run e publicacao seletiva aprovados separadamente; nenhuma operacao remota foi executada nesta revisao.
+
+## Selecao local de Brevo e Resend (2026-10-30)
+
+O usuario informou que tabela de outbox, dispatcher e POST estao publicados no workspace 152211 / branch `v1`; essa informacao e registro fornecido pelo usuario, nao foi verificada remotamente nesta etapa. Esta implementacao permanece local e nao executa chamadas ao provedor.
+
+As novas intencoes originais com destinatario chamam `Inventory/resolve_purchase_request_email_provider`. O helper aceita somente `brevo` ou `resend` e retorna apenas provedor/remetente/reply-to/nome e codigo generico, nunca chaves. Configuracao invalida nao aborta pedido ou cancelamento: estados e codigos seguros sao registrados usando os campos existentes. O PATCH resolve explicitamente o provedor da entrega original quando precisa confirmar configuracao para um aviso; nunca decide pelo seletor ativo. Clientes antigos sem destinatario continuam sem outbox e sem dependencia de provedor.
+
+O provedor e congelado em `purchase_request_email_delivery.provedor` no momento da intencao. O dispatcher nao consulta `NEXSTOCK_EMAIL_PROVIDER`: `resend` continua usando `RESEND_API_KEY`, snapshot e a allowlist exata existente; `brevo` usa `BREVO_API_KEY`, `BREVO_FROM_EMAIL`, `BREVO_FROM_NAME` e `BREVO_REPLY_TO`, sem a allowlist fixa do Resend. A mudanca de selecao ativa nao migra nem regrava linhas antigas. O schema existente ja possui `provedor`, identificador, snapshot sensivel e chaves unicas por evento; nenhuma tabela nova foi necessaria.
+
+O snapshot interno permanece canonico (`from`, `from_name`, `to`, `subject`, `text`, `html`, `reply_to`) e nao e substituido pelo corpo especifico do provedor. O HTML e montado com texto escapado para `&`, `<` e `>`, e `text` continua disponivel para o Resend. O adaptador Resend mantem seu formato e cabecalho HTTP `Idempotency-Key`; o Brevo mapeia a snapshot para `sender`, lista `to`, `subject`, `textContent`, `htmlContent`, `replyTo` e `headers.IdempotencyKey`. A referencia atual do endpoint Brevo informa que `htmlContent` e obrigatorio sem template, por isso o adaptador envia as duas representacoes ([referencia do endpoint](https://developers.brevo.com/reference/send-transac-email)). Para novas intencoes Brevo, a chave de provedor e UUID gerada localmente; as chaves deterministicas antigas de Resend permanecem inalteradas. O classificador usa codigos sanitizados genericos, considera `messageId` Brevo equivalente ao `id` Resend e classifica timeout, 5xx, resposta 2xx sem ID e duplicidade de idempotencia sem ID original como `indeterminado`. Rejeicoes HTTP explicitas permanecem `falhou`; nao ha retry automatico.
+
+Os testes locais verificam a selecao estrita, snapshots, roteamento pelo valor persistido, formato dos dois requests, mapeamento de identificadores, allowlist exclusiva do Resend, resposta ambigua, ausencia de segredo/log e preservacao das regras de cancelamento/idempotencia. Eles sao estaticos/simulados: nao executam o Xano nem provam que o endpoint Brevo aceitou o formato a partir dos servidores Xano.
+
+### Variaveis a configurar manualmente, sem valores no codigo
+
+- `NEXSTOCK_EMAIL_PROVIDER` (`brevo` ou `resend`, usada somente para novas intencoes originais; sua ausencia/invalidez nao bloqueia a operacao de compra).
+- `BREVO_API_KEY`, `BREVO_FROM_EMAIL`, `BREVO_FROM_NAME`; `BREVO_REPLY_TO` opcional.
+- `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `RESEND_REPLY_TO` e `RESEND_ALLOWED_TEST_RECIPIENT` para o ramo de teste Resend.
+
+Nenhuma variavel remota foi criada, lida ou alterada nesta etapa. Para novas intencoes sem uma configuracao completa do provedor selecionado, o fail-closed impede a criacao da intencao; para repeticao idempotente ja concluida, o caminho de replay nao depende da configuracao atual. Segredos nao aparecem nos logs, respostas, testes ou arquivos.
+
+### IP de saida, tarefas e limites nao comprovados
+
+A documentacao atual do Xano lista tarefas em background em planos pagos, e o recurso de IP de saida estatico como disponivel em planos pagos ([precos Xano](https://www.xano.com/pricing/), [recursos de seguranca Xano](https://security.xano.com/documents/security-features)). O dispatcher segue sem execucao automatica e sem trigger. O IP efetivo desta instancia/regiao nao foi consultado. Se o Brevo tiver bloqueio por IP habilitado, a origem real Xano deve ser confirmada e autorizada; nenhum bloqueio sera desabilitado automaticamente. O teste isolado do usuario confirma Brevo fora do Xano, nao a saida do workspace.
+
+A API Brevo documenta `POST /v3/smtp/email`, autenticacao `api-key`, corpo de mensagem transacional e sucesso `201` com `messageId` ([referencia do endpoint](https://developers.brevo.com/reference/send-transac-email)). A mesma referencia inclui `IdempotencyKey` na propriedade de headers da mensagem; o changelog de 2021 descreve janela de 15 minutos, enquanto a documentacao atual de envio em lote descreve `idempotencyKey` e janela de 30 minutos ([changelog](https://developers.brevo.com/changelog/2021/11/10), [idempotencia em lote](https://developers.brevo.com/docs/heterogenous-versions-batch-emails)). Esta diferenca deve ser reconfirmada no primeiro teste controlado. A chave UUID e apenas defesa adicional limitada; timeout e duplicidade sem ID continuam exigindo reconciliacao manual.
+
+Risco residual preservado: Xano Free nao demonstra aqui compare-and-swap entre dispatcher e PATCH, portanto uma chamada externa que ja comecou nao pode ser cancelada com confianca. Estados `processando`/`indeterminado` continuam bloqueados para retry; aviso de cancelamento permanece aguardando a confirmacao original, falha/supressao ou reconciliacao. Nenhum mecanismo garante exactly-once. A publicacao e teste runtime continuam pendentes.
+
+## Independencia das operacoes comerciais e da configuracao de e-mail (2026-10-30)
+
+Uma revisao local removeu a dependencia que fazia POST/PATCH abortarem quando o provedor ativo ou suas credenciais nao estavam configurados. Nao foi necessaria alteracao de tabela ou enum: `purchase_request.email_status` ja aceita `falhou`; `purchase_request_history.dados` e JSON opcional; e a outbox ja aceita status `falhou` e `codigo_erro` sanitizado. O schema da outbox define default `resend` para `provedor`, portanto o codigo nao insere uma linha quando nenhum provedor valido e conhecido — isso evita transformar o default em selecao implicita.
+
+No POST, a resolucao do provedor ocorre antes da primeira gravacao e nao lanca precondition por configuracao invalida. Sem destinatario, o comportamento legado permanece. Com destinatario e provedor reconhecido/configuracao valida, pedido, historico e intencao `pendente` sao gravados na transacao existente. Com provedor reconhecido, mas configuracao incompleta, a operacao comercial segue; pedido e historico registram `email_status=falhou` e a outbox registra o provedor efetivamente selecionado, status `falhou` e codigo generico, sem elegibilidade para envio. Com seletor ausente/invalido, nao ha valor confiavel para `provedor`: o pedido segue com `email_status=falhou` e o historico registra o codigo; nenhuma linha de outbox e criada. Replay idempotente retorna o pedido existente e nao cria outra intencao nem reavalia a configuracao.
+
+No PATCH, autenticacao, grants `purchase_request.cancel`/`purchase_request.manage`, propriedade, justificativa, estados cancelaveis, transacao, historico e liberacao de `active_product_id` permanecem. A configuracao de `NEXSTOCK_EMAIL_PROVIDER` deixou de participar da decisao. Para a notificacao, o endpoint usa o provedor persistido na intencao original e os campos de remetente/reply-to do snapshot original. Se o original foi confirmado como enviado e o provedor correspondente esta configurado, a outbox recebe status `pendente`; se o provedor e reconhecido, mas sua configuracao esta incompleta, a outbox registra `falhou` e um codigo sanitizado dentro da mesma transacao, enquanto o cancelamento e confirmado. Se a intencao original esta `pendente`, `processando` ou `indeterminado`, o aviso mantem `aguardando_confirmacao_original` e o mesmo provedor registrado; o cancelamento nao decide o resultado da chamada externa. Se o provedor original e ausente/desconhecido, o historico registra `nao_enviada` e o motivo, sem linha de outbox com provedor inventado. Ausencia de intencao original ou estado original definitivamente nao enviado continua sem aviso/backfill.
+
+`resolve_purchase_request_email_provider` agora pode validar um provedor explicitamente solicitado pelo PATCH e validar destinatario contra `RESEND_ALLOWED_TEST_RECIPIENT` no ramo Resend. O POST passa o destinatario novo; o PATCH passa o destinatario da intencao original. O POST continua deixando o provedor selecionado ativo como autoridade para novas intencoes originais. O dispatcher permanece roteado pelo valor persistido em cada linha. Nao houve envio, execucao do dispatcher ou escrita remota. Os testes locais verificam estrutura e invariantes, mas nao comprovam transacoes, defaults/constraints reais, atualizacao concorrente, nem comportamento runtime do Xano Free. A outbox de status `falhou` exige reconciliacao manual; nao ha retry automatico.
+
+Se a configuracao for removida depois que uma intencao foi persistida, uma execucao manual do dispatcher agora marca a outbox como `falhou` com `EMAIL_PROVIDER_CONFIGURATION_INCOMPLETE` ou `EMAIL_PROVIDER_UNSUPPORTED`, sem chamar a API. Para evento original, atualiza tambem `purchase_request.email_status`; para cancelamento, preserva o status original da solicitacao. A linha deixa de ser elegivel para uma segunda execucao normal e requer reconciliacao/acao manual.

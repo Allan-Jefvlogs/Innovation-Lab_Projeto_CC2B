@@ -1,5 +1,6 @@
 import reflex as rx
 
+from .brand import brand_mark, brand_wordmark
 from ..state import AuthState
 
 
@@ -61,8 +62,18 @@ def menu_items() -> rx.Component:
 def sidebar() -> rx.Component:
     return rx.box(
         rx.vstack(
-            rx.heading("NexStock", size="6"),
-            rx.text("Sistema de Gerenciamento", size="2", color="#666"),
+            rx.hstack(
+                brand_mark(scale=0.5),
+                rx.vstack(
+                    brand_wordmark("1.2rem"),
+                    rx.text("Gestão inteligente de estoque", size="1", color="#64748B"),
+                    align="start",
+                    spacing="1",
+                ),
+                align="center",
+                spacing="3",
+                width="100%",
+            ),
             rx.divider(),
 
             menu_items(),
@@ -93,7 +104,7 @@ def sidebar() -> rx.Component:
 
 
 def page(title: str, content: rx.Component) -> rx.Component:
-    return rx.hstack(
+    page_content = rx.hstack(
         sidebar(),
         rx.box(
             rx.vstack(
@@ -136,6 +147,41 @@ def page(title: str, content: rx.Component) -> rx.Component:
         width="100%",
         align="stretch",
         spacing="0",
+    )
+    return rx.cond(
+        AuthState.session_is_valid,
+        page_content,
+        session_validation_panel(),
+    )
+
+
+def session_validation_panel() -> rx.Component:
+    """Keep protected pages covered until the server validates the session."""
+    can_retry = (AuthState.session_validation == "temporarily_unavailable") | (
+        AuthState.session_validation == "forbidden"
+    )
+    return rx.center(
+        rx.vstack(
+            rx.heading("Sessão não validada", size="6"),
+            rx.text(AuthState.session_status_message, role="status", text_align="center"),
+            rx.cond(
+                can_retry,
+                rx.button(
+                    "Tentar novamente",
+                    on_click=AuthState.retry_session_validation,
+                    disabled=AuthState.session_validation == "validating",
+                ),
+                rx.fragment(),
+            ),
+            rx.button("Voltar ao login", on_click=AuthState.logout, variant="ghost"),
+            align="center",
+            spacing="4",
+            max_width="32rem",
+            padding="2rem",
+        ),
+        width="100%",
+        min_height="100vh",
+        padding="1rem",
     )
 
 

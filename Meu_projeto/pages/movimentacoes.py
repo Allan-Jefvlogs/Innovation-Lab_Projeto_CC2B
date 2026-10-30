@@ -93,6 +93,8 @@ class EntryState(rx.State):
 
     async def _session_token(self) -> str:
         auth_state = await self.get_state(AuthState)
+        if not auth_state.is_authenticated or not auth_state.has_permission("stock.entry"):
+            return ""
         return str(auth_state.auth_token or "").strip()
 
     @staticmethod
@@ -472,9 +474,15 @@ class EntryState(rx.State):
 
         auth_state = await self.get_state(AuthState)
         token = str(auth_state.auth_token or "").strip()
-        if not token or not auth_state.is_authenticated:
+        if not auth_state.session_is_valid:
+            if auth_state.session_validation in {"temporarily_unavailable", "forbidden", "validating"}:
+                self.error_message = auth_state.session_status_message
+                return
             self.error_message = "Sua sessão expirou. Faça login novamente."
             yield rx.redirect("/")
+            return
+        if not token or not auth_state.has_permission("stock.entry"):
+            self.error_message = "Vocé não possui permissão para registrar entradas."
             return
 
         self.is_submitting = True
@@ -556,6 +564,8 @@ class ExitState(rx.State):
 
     async def _session_token(self) -> str:
         auth_state = await self.get_state(AuthState)
+        if not auth_state.is_authenticated or not auth_state.has_permission("stock.exit"):
+            return ""
         return str(auth_state.auth_token or "").strip()
 
     @staticmethod
@@ -815,9 +825,15 @@ class ExitState(rx.State):
 
         auth_state = await self.get_state(AuthState)
         token = str(auth_state.auth_token or "").strip()
-        if not token or not auth_state.is_authenticated:
+        if not auth_state.session_is_valid:
+            if auth_state.session_validation in {"temporarily_unavailable", "forbidden", "validating"}:
+                self.error_message = auth_state.session_status_message
+                return
             self.error_message = "Sua sessão expirou. Faça login novamente."
             yield rx.redirect("/")
+            return
+        if not token or not auth_state.has_permission("stock.exit"):
+            self.error_message = "Vocé não possui permissão para registrar saídas."
             return
 
         self.is_submitting = True
@@ -923,6 +939,8 @@ class MovementHistoryState(rx.State):
 
     async def _session_token(self) -> str:
         auth_state = await self.get_state(AuthState)
+        if not auth_state.is_authenticated or not auth_state.has_permission("movement.read"):
+            return ""
         return str(auth_state.auth_token or "").strip()
 
     @staticmethod

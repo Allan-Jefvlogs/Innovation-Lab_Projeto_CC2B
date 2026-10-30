@@ -51,7 +51,7 @@ class StockState(rx.State):
 
     async def _session_token(self) -> str:
         auth_state = await self.get_state(AuthState)
-        if not auth_state.is_authenticated:
+        if not auth_state.is_authenticated or not auth_state.has_permission("stock.read"):
             return ""
         return str(auth_state.auth_token or "").strip()
 

@@ -82,7 +82,11 @@ class CategoryState(rx.State):
         token, authenticated = await self._session()
         if not token or not authenticated:
             self.is_loading = False
-            yield rx.redirect("/")
+            return
+        auth_state = await self.get_state(AuthState)
+        if not auth_state.has_permission("category.read"):
+            self.is_loading = False
+            self.error_message = "Vocé não possui permissão para visualizar categorias."
             return
         try:
             self.categories = await self._fetch_all_categories(token)
