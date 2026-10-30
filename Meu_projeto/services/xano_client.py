@@ -1,13 +1,60 @@
 # reflex """Cliente HTTP para comunicação com a API do Xano."""
 
-import os
+import asyncio
+import concurrent.futures
+import hashlib
+import json
 import logging
+import math
+import os
+import re
+import time
+from collections import deque
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, Optional
 import httpx
+from .session_read_cache import session_read_cache
 
 
 logger = logging.getLogger(__name__)
+
+_PURCHASE_EMAIL_LOCAL_PATTERN = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+")
+_PURCHASE_EMAIL_DOMAIN_LABEL_PATTERN = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+)
+
+
+def normalize_purchase_request_email(value: Optional[str], *, required: bool) -> Optional[str]:
+    """Trim and validate a commercial recipient without changing its spelling."""
+    if value is None:
+        if required:
+            raise ValueError("Informe um e-mail de destinatário válido.")
+        return None
+    normalized = value.strip()
+    if not normalized:
+        if required:
+            raise ValueError("Informe um e-mail de destinatário válido.")
+        return None
+    local, separator, domain = normalized.partition("@")
+    labels = domain.split(".")
+    if (
+        not separator
+        or len(normalized) > 254
+        or len(local) > 64
+        or len(domain) > 253
+        or not _PURCHASE_EMAIL_LOCAL_PATTERN.fullmatch(local)
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+        or len(labels) < 2
+        or len(labels[-1]) < 2
+        or any(not _PURCHASE_EMAIL_DOMAIN_LABEL_PATTERN.fullmatch(label) for label in labels)
+    ):
+        raise ValueError("Informe um e-mail de destinatário válido.")
+    return normalized
 
 
 # Carrega variáveis do arquivo .env caso exista na raiz do projeto
@@ -24,6 +71,19 @@ DEFAULT_XANO_URL = "https://x8ki-letl-twmt.n7.xano.io"
 AUTH_CANONICAL_GROUP = "api:DipsnlZk"
 INVENTORY_CANONICAL_GROUP = "api:gestao-estoque-cadastros"
 STOCK_CANONICAL_GROUP = "api:estoque"
+
+_DASHBOARD_CACHE_ENDPOINTS = (
+    "GET /dashboard/products",
+    "GET /dashboard/categories",
+    "GET /dashboard/suppliers",
+    "GET /dashboard/stock",
+    "GET /stock/insufficient_summary",
+    "GET /dashboard/movements",
+    "GET /stock/replenishment",
+    "GET /purchase_requests/summary",
+    "GET /purchase_requests",
+    "GET /purchase_requests/by_id",
+)
 
 _XANO_ERROR_CODES = {
     "DUPLICATE_VALUE",
@@ -58,6 +118,21 @@ _XANO_ERROR_CODES = {
     "UNKNOWN_PERMISSION_CODE",
     "DUPLICATE_PERMISSION_CODE",
     "IMMUTABLE_PROFILE",
+    "INVALID_QUANTITY",
+    "INVALID_URGENCY",
+    "PRODUCT_STOCK_NOT_INSUFFICIENT",
+    "STOCK_BALANCE_INVALID",
+    "PURCHASE_REQUEST_ALREADY_ACTIVE",
+    "IDEMPOTENCY_KEY_REUSED",
+    "PURCHASE_REQUEST_CREATE_FAILED",
+    "INVALID_REQUEST_ID",
+    "INVALID_JUSTIFICATION",
+    "PURCHASE_REQUEST_NOT_FOUND",
+    "PURCHASE_REQUEST_ALREADY_CANCELLED",
+    "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE",
+    "PURCHASE_REQUEST_CANCEL_CONFLICT",
+    "PURCHASE_REQUEST_CANCEL_FAILED",
+    "TOO_MANY_REQUESTS",
 }
 
 _SENSITIVE_LOG_KEYS = {
@@ -132,7 +207,22 @@ def _extract_xano_error_code(payload: Any) -> str:
         "UNKNOWN_PERMISSION_CODE",
         "DUPLICATE_PERMISSION_CODE",
         "IMMUTABLE_PROFILE",
+        "PURCHASE_REQUEST_NOT_FOUND",
+        "PRODUCT_STOCK_NOT_INSUFFICIENT",
+        "STOCK_BALANCE_INVALID",
+        "PURCHASE_REQUEST_ALREADY_ACTIVE",
+        "IDEMPOTENCY_KEY_REUSED",
+        "PURCHASE_REQUEST_CREATE_FAILED",
+        "INVALID_REQUEST_ID",
+        "INVALID_JUSTIFICATION",
+        "PURCHASE_REQUEST_ALREADY_CANCELLED",
+        "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE",
+        "PURCHASE_REQUEST_CANCEL_CONFLICT",
+        "PURCHASE_REQUEST_CANCEL_FAILED",
+        "INVALID_QUANTITY",
+        "INVALID_URGENCY",
         "INVALID_INPUT",
+        "TOO_MANY_REQUESTS",
         "VALIDATION_ERROR",
         "INPUT_ERROR",
         "INPUTERROR",
@@ -145,11 +235,18 @@ def _extract_xano_error_code(payload: Any) -> str:
 class XanoError(Exception):
     """Exceção base para erros de comunicação com a API do Xano."""
 
-    def __init__(self, message: str, status_code: Optional[int] = None, payload: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        retry_after: Optional[str] = None,
+    ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.payload = payload or {}
+        self.retry_after = retry_after
 
 
 class XanoAuthError(XanoError):
@@ -172,9 +269,13 @@ class XanoPermissionError(XanoError):
 class XanoRequestError(XanoError):
     """Erro funcional retornado por uma API do Xano."""
 
-    def __init__(self, message: str, error_code: str, status_code: int, payload: Dict[str, Any]):
-        super().__init__(message, status_code=status_code, payload=payload)
+    def __init__(
+        self, message: str, error_code: str, status_code: int, payload: Dict[str, Any],
+        retry_after: Optional[str] = None,
+    ):
+        super().__init__(message, status_code=status_code, payload=payload, retry_after=retry_after)
         self.error_code = error_code
+        self.origin = "remote_xano" if status_code == 429 else None
 
 
 class XanoConnectionError(XanoError):
@@ -187,12 +288,198 @@ class XanoServerError(XanoError):
     pass
 
 
+class XanoRateLimitError(XanoServerError):
+    """Bloqueio do coordenador local antes de iniciar uma chamada HTTP."""
+
+    def __init__(self, retry_after_seconds: float):
+        seconds = max(1, math.ceil(retry_after_seconds))
+        super().__init__(
+            f"Limite local de requisi\u00e7\u00f5es atingido. Aguarde {seconds} segundo(s) e tente novamente.",
+            status_code=429,
+            retry_after=str(seconds),
+        )
+        self.retry_after_seconds = retry_after_seconds
+        self.origin = "local_coordinator"
+
+
+class XanoRequestCoordinator:
+    """Limita chamadas por processo e deduplica apenas GETs em andamento.
+
+    O lock protege somente os metadados locais. A chamada HTTP ocorre depois
+    que ele é liberado, e Futures concorrentes permitem compartilhar um GET
+    entre event loops sem manter clientes HTTP vinculados a um loop.
+    """
+
+    def __init__(
+        self,
+        limit: int = 7,
+        window_seconds: float = 20.0,
+        *,
+        clock=None,
+        wall_clock=None,
+    ):
+        self.limit = max(1, int(limit))
+        self.window_seconds = max(0.1, float(window_seconds))
+        self._clock = clock or time.monotonic
+        self._wall_clock = wall_clock or time.time
+        self._lock = Lock()
+        self._started: deque[float] = deque()
+        self._blocked_until = 0.0
+        self._inflight: dict[tuple[str, str, str], concurrent.futures.Future] = {}
+
+    @staticmethod
+    def _normalized_params(params: Optional[Dict[str, Any]]) -> str:
+        return json.dumps(params or {}, sort_keys=True, separators=(",", ":"), default=str)
+
+    def _get_key(
+        self, method: str, url: str, token: Optional[str], params
+    ) -> tuple[str, str, str]:
+        credential_id = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+        request_id = json.dumps(
+            [url, self._normalized_params(params)], separators=(",", ":")
+        )
+        return method.upper(), credential_id, request_id
+
+    def _retry_error(self, delay: float) -> XanoRateLimitError:
+        return XanoRateLimitError(max(0.0, delay))
+
+    def _reserve_locked(self, now: float) -> None:
+        while self._started and now - self._started[0] >= self.window_seconds:
+            self._started.popleft()
+        if now < self._blocked_until:
+            raise self._retry_error(self._blocked_until - now)
+        if len(self._started) >= self.limit:
+            raise self._retry_error(self._started[0] + self.window_seconds - now)
+        self._started.append(now)
+
+    @staticmethod
+    def _retry_delay(header: Optional[str], fallback: float, wall_now: float) -> float:
+        if header:
+            try:
+                return max(0.0, float(header.strip()))
+            except (TypeError, ValueError):
+                try:
+                    retry_at = parsedate_to_datetime(header)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    return max(0.0, retry_at.timestamp() - wall_now)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return fallback
+
+    def mark_rate_limited(self, retry_after: Optional[str]) -> None:
+        delay = self._retry_delay(retry_after, self.window_seconds, self._wall_clock())
+        with self._lock:
+            self._blocked_until = max(self._blocked_until, self._clock() + delay)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        token: Optional[str],
+        params: Optional[Dict[str, Any]],
+        send,
+    ) -> httpx.Response:
+        method = method.upper()
+        key = self._get_key(method, url, token, params) if method == "GET" else None
+        leader = True
+        shared: Optional[concurrent.futures.Future] = None
+        with self._lock:
+            if key is not None and key in self._inflight:
+                leader = False
+                shared = self._inflight[key]
+            else:
+                self._reserve_locked(self._clock())
+                if key is not None:
+                    shared = concurrent.futures.Future()
+                    self._inflight[key] = shared
+
+        if not leader:
+            assert shared is not None
+            return await asyncio.shield(asyncio.wrap_future(shared))
+
+        try:
+            response = await send()
+            if response.status_code == 429:
+                self.mark_rate_limited(response.headers.get("Retry-After"))
+            if shared is not None and not shared.done():
+                shared.set_result(response)
+            return response
+        except BaseException as exc:
+            if shared is not None and not shared.done():
+                shared.set_exception(exc)
+            raise
+        finally:
+            if key is not None:
+                with self._lock:
+                    if self._inflight.get(key) is shared:
+                        del self._inflight[key]
+
+
+def _configured_positive_int(name: str, default: int) -> int:
+    try:
+        return min(7, max(1, int(os.getenv(name, str(default)))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _configured_positive_float(name: str, default: float) -> float:
+    try:
+        return max(0.1, float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+_DEFAULT_REQUEST_COORDINATOR = XanoRequestCoordinator(
+    # Cota remota nominal observada: 10/20 s; mantemos margem para outros
+    # usuários e ferramentas que compartilham o workspace Xano.
+    limit=_configured_positive_int("XANO_REQUEST_BUDGET", 7),
+    window_seconds=max(20.0, _configured_positive_float("XANO_REQUEST_WINDOW_SECONDS", 20.0)),
+)
+
+
 class XanoAuthClient:
     """Cliente responsável pelas operações de autenticação e identificação de usuário no Xano."""
 
-    def __init__(self, base_url: Optional[str] = None, timeout: float = 10.0):
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        timeout: float = 10.0,
+        *,
+        coordinator: Optional[XanoRequestCoordinator] = None,
+    ):
         self.base_url = (base_url or os.getenv("XANO_API_BASE_URL", DEFAULT_XANO_URL)).rstrip("/")
         self.timeout = timeout
+        self.coordinator = coordinator or _DEFAULT_REQUEST_COORDINATOR
+
+    async def _send_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        json_payload: Optional[Dict[str, Any]] = None,
+        auth_token: Optional[str] = None,
+    ) -> httpx.Response:
+        async def send() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                request = getattr(client, "request", None)
+                if request is not None:
+                    return await request(
+                        method, url, headers=headers, params=params, json=json_payload
+                    )
+                # Compatibilidade com fakes legados usados nos testes do cliente.
+                method_call = getattr(client, method.lower())
+                kwargs = {"headers": headers, "params": params}
+                if json_payload is not None:
+                    kwargs["json"] = json_payload
+                return await method_call(url, **kwargs)
+
+        return await self.coordinator.request(
+            method, url, token=auth_token, params=params, send=send
+        )
 
     @property
     def auth_group_url(self) -> str:
@@ -221,14 +508,14 @@ class XanoAuthClient:
     ) -> Dict[str, Any]:
         """Executa uma chamada autenticada a um grupo de APIs do estoque."""
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.request(
-                    method,
-                    f"{(group_url or self.inventory_group_url)}/{path.lstrip('/')}",
-                    headers={"Authorization": f"Bearer {auth_token}"},
-                    params=params,
-                    json=json_payload,
-                )
+            response = await self._send_request(
+                method,
+                f"{(group_url or self.inventory_group_url)}/{path.lstrip('/')}",
+                headers={"Authorization": f"Bearer {auth_token}"},
+                params=params,
+                json_payload=json_payload,
+                auth_token=auth_token,
+            )
         except (httpx.RequestError, httpx.TimeoutException) as exc:
             logger.exception(
                 "Xano transport failed: method=%s path=%s exception_type=%s",
@@ -275,6 +562,9 @@ class XanoAuthClient:
                     "O Xano retornou uma resposta em formato inesperado.",
                     status_code=response.status_code,
                 )
+            if method.upper() != "GET":
+                for endpoint in _DASHBOARD_CACHE_ENDPOINTS:
+                    session_read_cache.invalidate(endpoint=endpoint, token=auth_token)
             return data
 
         payload = data if isinstance(data, dict) else {}
@@ -289,7 +579,11 @@ class XanoAuthClient:
             _safe_error_log_value(data.get("message")) if isinstance(data, dict) else None,
             _safe_error_log_value(data.get("payload")) if isinstance(data, dict) else None,
         )
-        error_code = _extract_xano_error_code(data)
+        error_code = (
+            "TOO_MANY_REQUESTS"
+            if response.status_code == 429
+            else _extract_xano_error_code(data)
+        )
         if error_code == "USER_INACTIVE":
             raise XanoAuthError(
                 "Sua conta foi inativada. Entre em contato com o Líder.",
@@ -310,6 +604,20 @@ class XanoAuthClient:
             )
 
         friendly_messages = {
+            "INVALID_QUANTITY": "Informe uma quantidade maior que zero.",
+            "INVALID_URGENCY": "Selecione uma urgência válida.",
+            "STOCK_BALANCE_INVALID": "O saldo de estoque retornado não permite criar a solicitação.",
+            "PRODUCT_STOCK_NOT_INSUFFICIENT": "O estoque do Produto já não precisa de reposição.",
+            "PURCHASE_REQUEST_ALREADY_ACTIVE": "Já existe uma solicitação ativa para este Produto.",
+            "IDEMPOTENCY_KEY_REUSED": "A chave desta tentativa foi usada com dados diferentes. Confira os dados antes de iniciar outra tentativa.",
+            "PURCHASE_REQUEST_CREATE_FAILED": "O Xano não confirmou a criação da solicitação. Verifique o resultado antes de iniciar outra tentativa.",
+            "INVALID_REQUEST_ID": "A solicitação selecionada não é válida.",
+            "INVALID_JUSTIFICATION": "Informe uma justificativa para cancelar a solicitação.",
+            "PURCHASE_REQUEST_NOT_FOUND": "A solicitação de compra não foi encontrada.",
+            "PURCHASE_REQUEST_ALREADY_CANCELLED": "A solicitação já está cancelada.",
+            "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE": "O status atual não permite cancelar esta solicitação.",
+            "PURCHASE_REQUEST_CANCEL_CONFLICT": "A solicitação mudou enquanto era cancelada. Atualize a lista.",
+            "PURCHASE_REQUEST_CANCEL_FAILED": "O Xano não confirmou o cancelamento. Verifique a lista antes de repetir.",
             "INVALID_INPUT": "Confira os campos informados e tente novamente.",
             "INPUT_ERROR": "Confira os campos obrigatórios e os valores informados.",
             "INPUTERROR": "Confira os campos obrigatórios e os valores informados.",
@@ -328,12 +636,28 @@ class XanoAuthClient:
             "STOCK_BALANCE_NOT_FOUND": "Não foi encontrado saldo de estoque para este produto.",
             "STOCK_UPDATE_FAILED": "Não foi possível atualizar o estoque. Tente novamente.",
             "STOCK_CONCURRENCY_CONFLICT": "Houve um conflito ao atualizar o estoque. Tente novamente.",
+            "TOO_MANY_REQUESTS": "O Xano está limitando as solicitações. Aguarde e tente novamente.",
         }
         message = friendly_messages.get(
             error_code,
             f"O Xano não concluiu a operação ({response.status_code}). Tente novamente.",
         )
-        raise XanoRequestError(message, error_code, response.status_code, payload)
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            delay = self.coordinator._retry_delay(
+                retry_after, self.coordinator.window_seconds, time.time()
+            )
+            message = (
+                "O Xano está limitando as solicitações. "
+                f"Aguarde {max(1, math.ceil(delay))} segundo(s) e tente novamente."
+            )
+        raise XanoRequestError(
+            message,
+            error_code,
+            response.status_code,
+            payload,
+            retry_after=response.headers.get("Retry-After"),
+        )
 
     async def get_permissions(self, auth_token: str) -> Dict[str, Any]:
         """Consulta perfis, catálogo e matriz administrativa já existentes no Xano."""
@@ -448,11 +772,18 @@ class XanoAuthClient:
         )
 
     async def list_products(
-        self, auth_token: str, page: int = 1, per_page: int = 100
+        self,
+        auth_token: str,
+        page: int = 1,
+        per_page: int = 100,
+        status: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Consulta a listagem paginada de produtos com a sessão atual."""
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if status in {"ativo", "inativo"}:
+            params["status"] = status
         data = await self._inventory_request(
-            "GET", "/products", auth_token, params={"page": page, "per_page": per_page}
+            "GET", "/products", auth_token, params=params
         )
         if not isinstance(data.get("items"), list):
             raise XanoServerError("O Xano retornou uma lista de produtos em formato inesperado.")
@@ -611,6 +942,64 @@ class XanoAuthClient:
             raise XanoServerError("O Xano retornou saldos de estoque em formato inesperado.")
         return data
 
+    async def get_stock_insufficient_summary(
+        self,
+        auth_token: str,
+        *,
+        page: int = 1,
+        per_page: int = 5,
+    ) -> Dict[str, Any]:
+        """Consulta o resumo limitado de Produtos ativos com estoque insuficiente."""
+        if page < 1 or per_page < 1 or per_page > 20:
+            raise ValueError("A página deve ser positiva e per_page deve estar entre 1 e 20.")
+        data = await self._inventory_request(
+            "GET",
+            "/stock/insufficient_summary",
+            auth_token,
+            params={"page": page, "per_page": per_page},
+            group_url=self.stock_group_url,
+        )
+        items = data.get("items")
+        total = data.get("itemsTotal")
+        current_page = data.get("curPage")
+        page_size = data.get("perPage")
+        if (
+            not isinstance(items, list)
+            or isinstance(total, bool)
+            or not isinstance(total, int)
+            or total < 0
+            or total < len(items)
+            or isinstance(current_page, bool)
+            or not isinstance(current_page, int)
+            or current_page != page
+            or isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or page_size != per_page
+            or page_size > 20
+            or len(items) > page_size
+        ):
+            raise XanoServerError(
+                "O Xano retornou um resumo de estoque insuficiente em formato inesperado.",
+                status_code=200,
+            )
+        return data
+
+    async def get_purchase_requests_summary(self, auth_token: str) -> Dict[str, int]:
+        """Consulta e valida a contagem global de solicitações abertas."""
+        data = await self._inventory_request(
+            "GET",
+            "/purchase_requests/summary",
+            auth_token,
+            group_url=self.stock_group_url,
+        )
+        count = data.get("solicitacoes_abertas") if isinstance(data, dict) else None
+        if type(count) is not int or count < 0:
+            raise XanoServerError(
+                "O Xano retornou uma contagem de solicitações abertas inválida.",
+                status_code=200,
+            )
+        return {"solicitacoes_abertas": count}
+
     async def get_stock_summary(self, auth_token: str) -> Dict[str, int]:
         """Consulta os totais de produtos monitorados e por situaÃ§Ã£o."""
         data = await self._inventory_request(
@@ -628,6 +1017,174 @@ class XanoAuthClient:
             }
         except (KeyError, TypeError, ValueError) as exc:
             raise XanoServerError("O Xano retornou um resumo de estoque em formato inesperado.") from exc
+
+    async def list_stock_replenishment(
+        self,
+        auth_token: str,
+        *,
+        page: int = 1,
+        per_page: int = 20,
+        requested_page: int = 1,
+        requested_per_page: int = 20,
+    ) -> Dict[str, Any]:
+        """Consulta as duas listas paginadas pelo endpoint oficial de Reposição."""
+        params = {
+            "page": page,
+            "per_page": per_page,
+            "requested_page": requested_page,
+            "requested_per_page": requested_per_page,
+        }
+        data = await self._inventory_request(
+            "GET",
+            "/stock/replenishment",
+            auth_token,
+            params=params,
+            group_url=self.stock_group_url,
+        )
+
+        def contract_error(
+            section: str,
+            field: str,
+            expected: str,
+            found: Any = None,
+            *,
+            missing: bool = False,
+        ) -> XanoServerError:
+            # Log only schema names and types, never response values.
+            error = XanoServerError(
+                f"O Xano retornou {section}.{field} incompatible with the replenishment response contract.",
+                status_code=200,
+            )
+            error.contract_section = section
+            error.contract_field = field
+            error.contract_expected = expected
+            error.contract_found_type = "missing" if missing else type(found).__name__
+            return error
+
+        def validate_page(name: str) -> Dict[str, Any]:
+            if name not in data:
+                raise contract_error(name, "$", "object", missing=True)
+            result = data[name]
+            if not isinstance(result, dict):
+                raise contract_error(name, "$", "object", result)
+            if "items" not in result:
+                raise contract_error(name, "items", "list", missing=True)
+            items = result["items"]
+            if not isinstance(items, list):
+                raise contract_error(name, "items", "list", items)
+            if any(not isinstance(item, dict) for item in items):
+                invalid_item = next(item for item in items if not isinstance(item, dict))
+                raise contract_error(name, "items[]", "object", invalid_item)
+
+            paging: dict[str, int] = {}
+            for field in ("curPage", "perPage", "itemsTotal"):
+                if field not in result:
+                    raise contract_error(name, field, "integer", missing=True)
+                value = result[field]
+                if type(value) is not int:  # Reject bool and numeric strings.
+                    raise contract_error(name, field, "integer", value)
+                paging[field] = value
+
+            current_page = paging["curPage"]
+            page_size = paging["perPage"]
+            total = paging["itemsTotal"]
+            if current_page < 1 or page_size < 1 or total < 0:
+                field = "curPage" if current_page < 1 else "perPage" if page_size < 1 else "itemsTotal"
+                raise contract_error(name, field, "valid pagination integer", result[field])
+            return result
+
+        return {
+            "a_solicitar": validate_page("a_solicitar"),
+            "compra_ja_solicitada": validate_page("compra_ja_solicitada"),
+        }
+
+    async def create_purchase_request(
+        self,
+        auth_token: str,
+        *,
+        produto_id: int,
+        quantidade_solicitada: str,
+        urgencia: str,
+        chave_idempotencia: str,
+        email_destinatario: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Cria/reconcilia uma solicitação usando a chave da tentativa lógica."""
+        try:
+            quantity_value = float(quantidade_solicitada)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("A quantidade solicitada deve ser um número positivo.") from exc
+        if not math.isfinite(quantity_value) or quantity_value <= 0:
+            raise ValueError("A quantidade solicitada deve ser um número positivo finito.")
+        normalized_email = normalize_purchase_request_email(email_destinatario, required=False)
+        payload = {
+            "produto_id": produto_id,
+            "quantidade_solicitada": quantity_value,
+            "urgencia": urgencia,
+            "chave_idempotencia": chave_idempotencia,
+        }
+        if normalized_email is not None:
+            payload["email_destinatario"] = normalized_email
+        data = await self._inventory_request(
+            "POST",
+            "/purchase_requests",
+            auth_token,
+            json_payload=payload,
+            group_url=self.stock_group_url,
+        )
+        request = data.get("solicitacao")
+        request_id = request.get("id") if isinstance(request, dict) else None
+        returned_product_id = request.get("produto_id") if isinstance(request, dict) else None
+        allowed_statuses = {
+            "aberta", "em_analise", "aprovada", "em_compra",
+            "aguardando_recebimento", "recebimento_parcial", "concluida",
+            "cancelada", "rejeitada",
+        }
+        if (
+            isinstance(request_id, bool)
+            or not isinstance(request_id, int)
+            or request_id <= 0
+            or type(returned_product_id) is not int
+            or returned_product_id != produto_id
+            or request.get("status") not in allowed_statuses
+            or request.get("email_status") not in {"pendente", "enviado", "falhou"}
+            or data.get("email_status") != request.get("email_status")
+            or type(data.get("repeticao_idempotente")) is not bool
+            or type(data.get("email_enviado")) is not bool
+            or data.get("email_enviado") is not False
+        ):
+            raise XanoServerError(
+                "O Xano respondeu, mas não confirmou o contrato da solicitação criada.",
+                status_code=200,
+            )
+        return data
+
+    async def cancel_purchase_request(
+        self,
+        auth_token: str,
+        request_id: int,
+        justificativa: str,
+    ) -> Dict[str, Any]:
+        """Cancela uma solicitação; autorização e transição são validadas no Xano."""
+        data = await self._inventory_request(
+            "PATCH",
+            f"/purchase_requests/by_id/{request_id}/cancel",
+            auth_token,
+            json_payload={"justificativa": justificativa.strip()},
+            group_url=self.stock_group_url,
+        )
+        request = data.get("solicitacao")
+        returned_id = request.get("id") if isinstance(request, dict) else None
+        if (
+            isinstance(returned_id, bool)
+            or not isinstance(returned_id, int)
+            or returned_id != request_id
+            or request.get("status") != "cancelada"
+        ):
+            raise XanoServerError(
+                "O Xano respondeu, mas não confirmou o cancelamento da solicitação.",
+                status_code=200,
+            )
+        return data
 
     async def list_movements(
         self,
@@ -899,8 +1456,9 @@ class XanoAuthClient:
         payload = {"email": email, "password": password}
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload)
+            response = await self._send_request(
+                "POST", url, json_payload=payload
+            )
         except (httpx.RequestError, httpx.TimeoutException) as exc:
             raise XanoConnectionError(
                 "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
@@ -944,6 +1502,7 @@ class XanoAuthClient:
             f"Erro na autenticação ({response.status_code}). Tente novamente mais tarde.",
             status_code=response.status_code,
             payload=error_payload,
+            retry_after=response.headers.get("Retry-After"),
         )
 
     async def get_current_user(self, auth_token: str) -> Dict[str, Any]:
@@ -965,8 +1524,9 @@ class XanoAuthClient:
         headers = {"Authorization": f"Bearer {auth_token}"}
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, headers=headers)
+            response = await self._send_request(
+                "GET", url, headers=headers, auth_token=auth_token
+            )
         except (httpx.RequestError, httpx.TimeoutException) as exc:
             raise XanoConnectionError(
                 "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
@@ -1008,6 +1568,7 @@ class XanoAuthClient:
             f"Erro ao recuperar dados do usuário ({response.status_code}).",
             status_code=response.status_code,
             payload=error_payload,
+            retry_after=response.headers.get("Retry-After"),
         )
 
 

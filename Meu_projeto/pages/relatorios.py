@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -32,13 +34,45 @@ from ..services.xano_client import (
     XanoServerError,
     auth_client,
 )
+from ..services.session_read_cache import CACHE_MISS, session_read_cache
 from ..state import AuthState
+
+
+def _cache_ttl(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+REPORT_PRODUCT_OPTIONS_TTL = _cache_ttl(
+    "NEXSTOCK_REPORT_PRODUCTS_CACHE_TTL_SECONDS", 30.0
+)
+REPORT_SUPPLIER_OPTIONS_TTL = _cache_ttl(
+    "NEXSTOCK_REPORT_SUPPLIERS_CACHE_TTL_SECONDS", 120.0
+)
+REPORT_RESULTS_TTL = _cache_ttl("NEXSTOCK_REPORT_RESULTS_TTL_SECONDS", 30.0)
+REPORT_OPTIONS_PER_PAGE = 100
+
+
+def _temporary_report_read_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    return isinstance(error, XanoConnectionError) or (
+        isinstance(status_code, int) and (status_code == 429 or status_code >= 500)
+    )
 
 
 class ReportState(rx.State):
     movements: list[dict[str, str]] = []
     is_loading: bool = False
     error_message: str = ""
+    report_data_loaded: bool = False
+    report_results_stale: bool = False
+    report_retry_available: bool = False
+    report_retry_page: int = 1
+    report_retry_apply_draft: bool = False
+    report_loaded_at: float = 0.0
+    summary_loaded_at: float = 0.0
     current_page: int = 1
     per_page: int = 20
     total_items: int = 0
@@ -63,6 +97,10 @@ class ReportState(rx.State):
     product_page: int = 1
     product_has_more: bool = False
     product_loading_more: bool = False
+    product_options_loading: bool = False
+    product_options_loaded: bool = False
+    product_options_loaded_at: float = 0.0
+    product_options_stale: bool = False
 
     supplier_options: list[dict[str, str]] = []
     supplier_query: str = ""
@@ -70,11 +108,81 @@ class ReportState(rx.State):
     supplier_page: int = 1
     supplier_has_more: bool = False
     supplier_loading_more: bool = False
+    supplier_options_loading: bool = False
+    supplier_options_loaded: bool = False
+    supplier_options_loaded_at: float = 0.0
+    supplier_options_stale: bool = False
+    filter_options_message: str = ""
+    filter_options_error_kind: str = ""
+    preserve_product_selection_on_retry: bool = False
+    preserve_supplier_selection_on_retry: bool = False
 
     movement_total: int = 0
     entry_quantity_total: str = "0"
     exit_quantity_total: str = "0"
     export_loading: bool = False
+
+    @rx.var
+    def filters_dirty(self) -> bool:
+        return any(
+            (
+                self.start_date != self.applied_start_date,
+                self.end_date != self.applied_end_date,
+                self.filter_type != self.applied_filter_type,
+                self.filter_product_id != self.applied_filter_product_id,
+                self.filter_supplier_id != self.applied_filter_supplier_id,
+            )
+        )
+
+    @rx.var
+    def can_export(self) -> bool:
+        return (
+            self.report_data_loaded
+            and not self.filters_dirty
+            and not self.report_results_stale
+            and not self.error_message
+        )
+
+    def _draft_filter_values(self) -> tuple[str, str, str, str, str]:
+        return (
+            self.start_date, self.end_date, self.filter_type,
+            self.filter_product_id, self.filter_supplier_id,
+        )
+
+    def _applied_filter_values(self) -> tuple[str, str, str, str, str]:
+        return (
+            self.applied_start_date, self.applied_end_date, self.applied_filter_type,
+            self.applied_filter_product_id, self.applied_filter_supplier_id,
+        )
+
+    def _report_results_fresh(self) -> bool:
+        now = time.monotonic()
+        return (
+            self.report_data_loaded
+            and now - self.report_loaded_at < REPORT_RESULTS_TTL
+            and now - self.summary_loaded_at < REPORT_RESULTS_TTL
+        )
+
+    def _summary_fresh(self) -> bool:
+        return (
+            self.report_data_loaded
+            and time.monotonic() - self.summary_loaded_at < REPORT_RESULTS_TTL
+        )
+
+    def _clear_report_results(self) -> None:
+        self.movements = []
+        self.movement_total = 0
+        self.entry_quantity_total = "0"
+        self.exit_quantity_total = "0"
+        self.total_items = 0
+        self.total_pages = 1
+        self.next_page = None
+        self.prev_page = None
+        self.report_data_loaded = False
+        self.report_results_stale = False
+        self.report_retry_available = False
+        self.report_loaded_at = 0.0
+        self.summary_loaded_at = 0.0
 
     @rx.var
     def filtered_product_options(self) -> list[dict[str, str]]:
@@ -96,7 +204,33 @@ class ReportState(rx.State):
             if query in normalize_search_text(item.get("label", ""))
         ]
 
+    @rx.var
+    def product_options_empty_message(self) -> str:
+        if self.product_options_loading:
+            return "Carregando opções de produtos..."
+        if self.filter_options_error_kind == "product":
+            return "Não foi possível confirmar a lista de produtos. Tente novamente."
+        if self.product_options_stale:
+            return "A lista anterior de produtos está vazia e pode estar desatualizada."
+        return "Nenhuma opção encontrada."
+
+    @rx.var
+    def supplier_options_empty_message(self) -> str:
+        if self.supplier_options_loading:
+            return "Carregando opções de fornecedores..."
+        if self.filter_options_error_kind == "supplier":
+            return "Não foi possível confirmar a lista de fornecedores. Tente novamente."
+        if self.supplier_options_stale:
+            return "A lista anterior de fornecedores está vazia e pode estar desatualizada."
+        return "Nenhuma opção encontrada."
+
     def load_page(self):
+        self.report_data_loaded = False
+        self.report_results_stale = False
+        self.report_retry_available = False
+        self.report_loaded_at = 0.0
+        self.summary_loaded_at = 0.0
+        self.movements = []
         self.start_date = ""
         self.end_date = ""
         self.filter_type = ""
@@ -112,10 +246,46 @@ class ReportState(rx.State):
         self.exit_quantity_total = "0"
         self.product_query = ""
         self.supplier_query = ""
+        self.product_options = []
+        self.product_page = 1
+        self.product_has_more = False
+        self.product_loading_more = False
+        self.product_options_loading = False
+        self.product_options_loaded = False
+        self.product_options_loaded_at = 0.0
+        self.product_options_stale = False
+        self.product_options_open = False
+        self.supplier_options = []
+        self.supplier_page = 1
+        self.supplier_has_more = False
+        self.supplier_loading_more = False
+        self.supplier_options_loading = False
+        self.supplier_options_loaded = False
+        self.supplier_options_loaded_at = 0.0
+        self.supplier_options_stale = False
+        self.supplier_options_open = False
+        self.filter_options_message = ""
+        self.filter_options_error_kind = ""
+        self.preserve_product_selection_on_retry = False
+        self.preserve_supplier_selection_on_retry = False
         return [AuthState.require_auth(), ReportState.load_initial()]
 
     async def _session_token(self) -> str:
         auth_state = await self.get_state(AuthState)
+        if not auth_state.is_authenticated or not auth_state.has_permission("report.read"):
+            token = str(auth_state.auth_token or "").strip()
+            if token:
+                session_read_cache.clear_session(token)
+            self._clear_report_results()
+            self.product_options = []
+            self.product_options_loaded = False
+            self.product_options_stale = False
+            self.supplier_options = []
+            self.supplier_options_loaded = False
+            self.supplier_options_stale = False
+            self.filter_options_error_kind = ""
+            self.filter_options_message = ""
+            return ""
         return str(auth_state.auth_token or "").strip()
 
     @staticmethod
@@ -134,6 +304,9 @@ class ReportState(rx.State):
     async def load_initial(self):
         self.is_loading = True
         self.error_message = ""
+        self.report_retry_available = False
+        self.report_retry_page = 1
+        self.report_retry_apply_draft = False
         self.movements = []
         self.movement_total = 0
         self.entry_quantity_total = "0"
@@ -145,7 +318,7 @@ class ReportState(rx.State):
             yield rx.redirect("/")
             return
         try:
-            await self._load_report_data(token, 1)
+            await self._load_report_data(token, 1, self._applied_filter_values())
         except XanoAuthError:
             self.error_message = "Sua sessÃ£o expirou. FaÃ§a login novamente."
             yield rx.redirect("/")
@@ -154,8 +327,14 @@ class ReportState(rx.State):
             self.error_message = "VocÃª nÃ£o possui permissÃ£o para visualizar os relatÃ³rios."
         except XanoRequestError as exc:
             self.error_message = self._request_error_message(exc)
-        except (XanoConnectionError, XanoServerError, XanoError):
-            self.error_message = "Não foi possível carregar os relatórios. Tente novamente."
+            self.report_retry_available = _temporary_report_read_error(exc)
+        except (XanoConnectionError, XanoServerError, XanoError) as exc:
+            self.error_message = (
+                exc.message
+                if getattr(exc, "status_code", None) == 429
+                else "Não foi possível carregar os relatórios. Tente novamente."
+            )
+            self.report_retry_available = _temporary_report_read_error(exc)
         except Exception as exc:
             logger.exception("Reports load failed: exception_type=%s", type(exc).__name__)
             self.error_message = "Não foi possível carregar os relatórios. Tente novamente."
@@ -163,50 +342,179 @@ class ReportState(rx.State):
             self.is_loading = False
         yield
 
-        option_results = await asyncio.gather(
-            self._load_products(token),
-            self._load_suppliers(token),
-            return_exceptions=True,
+    async def _load_option_page(self, token: str, kind: str, page: int = 1):
+        ttl = (
+            REPORT_PRODUCT_OPTIONS_TTL
+            if kind == "product"
+            else REPORT_SUPPLIER_OPTIONS_TTL
         )
-        for operation, result in zip(("products", "suppliers"), option_results):
-            if not isinstance(result, BaseException):
-                continue
-            logger.warning(
-                "Report filter options failed: operation=%s path=/%s exception_type=%s",
-                operation,
-                operation,
-                type(result).__name__,
+        params = {"kind": kind, "page": page, "per_page": REPORT_OPTIONS_PER_PAGE}
+        key = session_read_cache.key(
+            "report_filter_options", "GET /report_options", token, params
+        )
+        cached, fresh = session_read_cache.get(key, ttl, allow_stale=True)
+        if fresh:
+            return cached, False
+
+        try:
+            response = await auth_client.list_report_options(
+                token, kind, page=page, per_page=REPORT_OPTIONS_PER_PAGE
             )
-            if operation == "products":
-                self.product_options = []
-                self.product_page = 1
-                self.product_has_more = False
-            else:
-                self.supplier_options = []
-                self.supplier_page = 1
-                self.supplier_has_more = False
+        except XanoError as exc:
+            if cached is not CACHE_MISS and _temporary_report_read_error(exc):
+                self.filter_options_error_kind = kind
+                self.filter_options_message = (
+                    f"{self._filter_options_error_message(exc)} "
+                    "As opções anteriores permanecem disponíveis e podem estar desatualizadas."
+                )
+                return cached, True
+            raise
+
+        option_mapper = self._product_option if kind == "product" else self._supplier_option
+        result = {
+            "items": [
+                option_mapper(item)
+                for item in response["items"]
+                if isinstance(item, dict) and item.get("id") is not None
+            ],
+            "has_more": len(response["items"]) == REPORT_OPTIONS_PER_PAGE,
+        }
+        session_read_cache.set(key, result, ttl)
+        return result, False
 
     async def _load_products(self, token: str):
-        response = await auth_client.list_report_options(token, "product", page=1, per_page=100)
-        self.product_options = []
-        self.product_options.extend(
-            self._product_option(item)
-            for item in response["items"]
-            if isinstance(item, dict) and item.get("id") is not None
-        )
+        result, stale = await self._load_option_page(token, "product", 1)
+        self.product_options = list(result["items"])
         self.product_page = 1
-        self.product_has_more = len(response["items"]) == 100
+        self.product_has_more = result["has_more"]
+        self.product_options_loaded = not stale
+        self.product_options_loaded_at = time.monotonic() if not stale else 0.0
+        self.product_options_stale = stale
+        return stale
 
     async def _load_suppliers(self, token: str):
-        response = await auth_client.list_report_options(token, "supplier", page=1, per_page=100)
-        self.supplier_options = []
-        self.supplier_options.extend(
-            self._supplier_option(item)
-            for item in response["items"]
-            if isinstance(item, dict) and item.get("id") is not None
-        )
+        result, stale = await self._load_option_page(token, "supplier", 1)
+        self.supplier_options = list(result["items"])
         self.supplier_page = 1
-        self.supplier_has_more = len(response["items"]) == 100
+        self.supplier_has_more = result["has_more"]
+        self.supplier_options_loaded = not stale
+        self.supplier_options_loaded_at = time.monotonic() if not stale else 0.0
+        self.supplier_options_stale = stale
+        return stale
+
+    async def open_product_options(self):
+        preserve_selection = self.preserve_product_selection_on_retry
+        self.preserve_product_selection_on_retry = False
+        if self.filter_product_id and not preserve_selection:
+            self.filter_product_id = ""
+            self.product_query = ""
+        self.product_options_open = True
+        self.supplier_options_open = False
+        if self.product_options_loading:
+            return
+        if (
+            self.product_options_loaded
+            and time.monotonic() - self.product_options_loaded_at < REPORT_PRODUCT_OPTIONS_TTL
+        ):
+            return
+        self.product_options_loading = True
+        self.filter_options_message = ""
+        self.filter_options_error_kind = ""
+        yield
+        try:
+            token = await self._session_token()
+            if not token:
+                yield rx.redirect("/")
+                return
+            stale = await self._load_products(token)
+            self.filter_options_error_kind = "product" if stale else ""
+            if stale and not self.filter_options_message:
+                self.filter_options_message = (
+                    "As opções de produtos exibidas podem estar desatualizadas. "
+                    "Feche e abra o seletor novamente depois do período de espera para atualizar."
+                )
+        except XanoAuthError:
+            self.product_options = []
+            self.product_options_loaded = False
+            self.product_options_stale = False
+            session_read_cache.invalidate(endpoint="GET /report_options", token=token)
+            yield rx.redirect("/")
+            return
+        except XanoError as exc:
+            self.product_options_loaded = False
+            self.filter_options_error_kind = "product"
+            temporary = _temporary_report_read_error(exc)
+            self.product_options_stale = temporary and bool(self.product_options)
+            if isinstance(exc, XanoPermissionError) or not temporary:
+                self.product_options = []
+            if isinstance(exc, XanoPermissionError):
+                session_read_cache.invalidate(endpoint="GET /report_options", token=token)
+            self.filter_options_message = self._filter_options_error_message(exc)
+            if self.product_options_stale:
+                self.filter_options_message += " As opções anteriores permanecem disponíveis e podem estar desatualizadas."
+        finally:
+            self.product_options_loading = False
+
+    async def open_supplier_options(self):
+        preserve_selection = self.preserve_supplier_selection_on_retry
+        self.preserve_supplier_selection_on_retry = False
+        if self.filter_supplier_id and not preserve_selection:
+            self.filter_supplier_id = ""
+            self.supplier_query = ""
+        self.supplier_options_open = True
+        self.product_options_open = False
+        if self.supplier_options_loading:
+            return
+        if (
+            self.supplier_options_loaded
+            and time.monotonic() - self.supplier_options_loaded_at < REPORT_SUPPLIER_OPTIONS_TTL
+        ):
+            return
+        self.supplier_options_loading = True
+        self.filter_options_message = ""
+        self.filter_options_error_kind = ""
+        yield
+        try:
+            token = await self._session_token()
+            if not token:
+                yield rx.redirect("/")
+                return
+            stale = await self._load_suppliers(token)
+            self.filter_options_error_kind = "supplier" if stale else ""
+            if stale and not self.filter_options_message:
+                self.filter_options_message = (
+                    "As opções de fornecedores exibidas podem estar desatualizadas. "
+                    "Feche e abra o seletor novamente depois do período de espera para atualizar."
+                )
+        except XanoAuthError:
+            self.supplier_options = []
+            self.supplier_options_loaded = False
+            self.supplier_options_stale = False
+            session_read_cache.invalidate(endpoint="GET /report_options", token=token)
+            yield rx.redirect("/")
+            return
+        except XanoError as exc:
+            self.supplier_options_loaded = False
+            self.filter_options_error_kind = "supplier"
+            temporary = _temporary_report_read_error(exc)
+            self.supplier_options_stale = temporary and bool(self.supplier_options)
+            if isinstance(exc, XanoPermissionError) or not temporary:
+                self.supplier_options = []
+            if isinstance(exc, XanoPermissionError):
+                session_read_cache.invalidate(endpoint="GET /report_options", token=token)
+            self.filter_options_message = self._filter_options_error_message(exc)
+            if self.supplier_options_stale:
+                self.filter_options_message += " As opções anteriores permanecem disponíveis e podem estar desatualizadas."
+        finally:
+            self.supplier_options_loading = False
+
+    def retry_product_options(self):
+        self.preserve_product_selection_on_retry = True
+        return ReportState.open_product_options
+
+    def retry_supplier_options(self):
+        self.preserve_supplier_selection_on_retry = True
+        return ReportState.open_supplier_options
 
     async def load_more_products(self):
         if self.product_loading_more or not self.product_has_more:
@@ -217,24 +525,39 @@ class ReportState(rx.State):
         self.product_loading_more = True
         try:
             page = self.product_page + 1
-            response = await auth_client.list_report_options(token, "product", page=page, per_page=100)
+            result, stale = await self._load_option_page(token, "product", page)
             known = {item["id"] for item in self.product_options}
             self.product_options.extend(
-                self._product_option(item)
-                for item in response["items"]
-                if isinstance(item, dict)
-                and item.get("id") is not None
-                and str(item["id"]) not in known
+                item for item in result["items"] if item["id"] not in known
             )
             self.product_page = page
-            self.product_has_more = len(response["items"]) == 100
+            self.product_has_more = result["has_more"]
+            self.product_options_loaded = not stale
+            self.product_options_stale = stale
+            self.filter_options_error_kind = "product" if stale else ""
+            if stale and not self.filter_options_message:
+                self.filter_options_message = "As opções de produtos podem estar desatualizadas durante a indisponibilidade do Xano."
         except XanoAuthError:
+            self.product_options = []
+            self.product_options_loaded = False
+            self.product_options_stale = False
+            session_read_cache.invalidate(endpoint="GET /report_options", token=token)
             return rx.redirect("/")
         except XanoError as exc:
             logger.warning(
                 "Report filter options failed: operation=products path=/products exception_type=%s",
                 type(exc).__name__,
             )
+            self.filter_options_message = self._filter_options_error_message(exc)
+            self.filter_options_error_kind = "product"
+            self.product_options_stale = _temporary_report_read_error(exc) and bool(self.product_options)
+            self.product_options_loaded = False
+            self.product_options_loaded_at = 0.0
+            if isinstance(exc, XanoPermissionError):
+                self.product_options = []
+                session_read_cache.invalidate(endpoint="GET /report_options", token=token)
+            elif not self.product_options_stale:
+                self.product_options = []
         finally:
             self.product_loading_more = False
 
@@ -247,37 +570,45 @@ class ReportState(rx.State):
         self.supplier_loading_more = True
         try:
             page = self.supplier_page + 1
-            response = await auth_client.list_report_options(token, "supplier", page=page, per_page=100)
+            result, stale = await self._load_option_page(token, "supplier", page)
             known = {item["id"] for item in self.supplier_options}
             self.supplier_options.extend(
-                self._supplier_option(item)
-                for item in response["items"]
-                if isinstance(item, dict)
-                and item.get("id") is not None
-                and str(item["id"]) not in known
+                item for item in result["items"] if item["id"] not in known
             )
             self.supplier_page = page
-            self.supplier_has_more = len(response["items"]) == 100
+            self.supplier_has_more = result["has_more"]
+            self.supplier_options_loaded = not stale
+            self.supplier_options_stale = stale
+            self.filter_options_error_kind = "supplier" if stale else ""
+            if stale and not self.filter_options_message:
+                self.filter_options_message = "As opções de fornecedores podem estar desatualizadas durante a indisponibilidade do Xano."
         except XanoAuthError:
+            self.supplier_options = []
+            self.supplier_options_loaded = False
+            self.supplier_options_stale = False
+            session_read_cache.invalidate(endpoint="GET /report_options", token=token)
             return rx.redirect("/")
         except XanoError as exc:
             logger.warning(
                 "Report filter options failed: operation=suppliers path=/suppliers exception_type=%s",
                 type(exc).__name__,
             )
+            self.filter_options_message = self._filter_options_error_message(exc)
+            self.filter_options_error_kind = "supplier"
+            self.supplier_options_stale = _temporary_report_read_error(exc) and bool(self.supplier_options)
+            self.supplier_options_loaded = False
+            self.supplier_options_loaded_at = 0.0
+            if isinstance(exc, XanoPermissionError):
+                self.supplier_options = []
+                session_read_cache.invalidate(endpoint="GET /report_options", token=token)
+            elif not self.supplier_options_stale:
+                self.supplier_options = []
         finally:
             self.supplier_loading_more = False
 
     def search_products(self, value: str):
         self.product_query = value
         self.filter_product_id = ""
-        self.product_options_open = True
-        self.supplier_options_open = False
-
-    def open_product_options(self):
-        if self.filter_product_id:
-            self.filter_product_id = ""
-            self.product_query = ""
         self.product_options_open = True
         self.supplier_options_open = False
 
@@ -297,13 +628,6 @@ class ReportState(rx.State):
     def search_suppliers(self, value: str):
         self.supplier_query = value
         self.filter_supplier_id = ""
-        self.supplier_options_open = True
-        self.product_options_open = False
-
-    def open_supplier_options(self):
-        if self.filter_supplier_id:
-            self.filter_supplier_id = ""
-            self.supplier_query = ""
         self.supplier_options_open = True
         self.product_options_open = False
 
@@ -341,11 +665,23 @@ class ReportState(rx.State):
 
     @staticmethod
     def _request_error_message(exc: XanoRequestError) -> str:
+        if exc.status_code == 429:
+            return exc.message or "O Xano limitou temporariamente as solicitações. Aguarde e tente novamente."
         if exc.error_code == "PERMISSION_DENIED":
             return "VocÃª nÃ£o possui permissÃ£o para visualizar os relatÃ³rios."
         if exc.error_code in {"INVALID_INPUT", "ERROR_CODE_INPUT_ERROR"}:
             return "Os filtros informados sÃ£o invÃ¡lidos. Confira as datas selecionadas."
         return "Não foi possível carregar os relatórios. Tente novamente."
+
+    @classmethod
+    def _filter_options_error_message(cls, exc: XanoError) -> str:
+        if isinstance(exc, XanoPermissionError):
+            return "A API não autorizou o carregamento das opções dos relatórios."
+        if isinstance(exc, XanoRequestError):
+            return cls._request_error_message(exc)
+        if isinstance(exc, (XanoConnectionError, XanoServerError)):
+            return exc.message or "Não foi possível carregar as opções. Tente novamente."
+        return "Não foi possível carregar as opções. Tente novamente."
 
     @staticmethod
     def _format_quantity(value: object) -> str:
@@ -384,31 +720,53 @@ class ReportState(rx.State):
             "motivo": str(item.get("motivo") or "—"),
         }
 
-    async def _load_report_data(self, token: str, page: int):
+    async def _load_report_data(
+        self,
+        token: str,
+        page: int,
+        filter_values: tuple[str, str, str, str, str] | None = None,
+    ):
+        filter_values = filter_values or self._applied_filter_values()
+        start_date, end_date, filter_type, filter_product_id, filter_supplier_id = filter_values
         try:
-            from_ms = self._date_boundary(self.applied_start_date, end_of_day=False)
-            to_ms = self._date_boundary(self.applied_end_date, end_of_day=True)
+            from_ms = self._date_boundary(start_date, end_of_day=False)
+            to_ms = self._date_boundary(end_date, end_of_day=True)
         except ValueError:
-            self.error_message = "Informe datas vÃ¡lidas para o período."
+            self.error_message = "Informe datas v\u00e1lidas para o per\u00edodo."
             return
         if from_ms is not None and to_ms is not None and from_ms > to_ms:
-            self.error_message = "A data inicial deve ser anterior ou igual Ã  data final."
+            self.error_message = "A data inicial deve ser anterior ou igual \u00e0 data final."
             return
 
-        product_id = int(self.applied_filter_product_id) if self.applied_filter_product_id.isdigit() and int(self.applied_filter_product_id) > 0 else None
-        supplier_id = int(self.applied_filter_supplier_id) if self.applied_filter_supplier_id.isdigit() and int(self.applied_filter_supplier_id) > 0 else None
-        tipo = self.applied_filter_type or None
+        product_id = int(filter_product_id) if filter_product_id.isdigit() and int(filter_product_id) > 0 else None
+        supplier_id = int(filter_supplier_id) if filter_supplier_id.isdigit() and int(filter_supplier_id) > 0 else None
+        tipo = filter_type or None
+        same_applied_filters = filter_values == self._applied_filter_values()
+        summary = None
 
-        summary, movements = await asyncio.gather(
-            auth_client.get_movements_summary(
-                token,
-                date_from=from_ms,
-                date_to=to_ms,
-                tipo=tipo,
-                product_id=product_id,
-                supplier_id=supplier_id,
-            ),
-            auth_client.list_movements(
+        if page == 1 or not self._summary_fresh() or not same_applied_filters:
+            summary, movements = await asyncio.gather(
+                auth_client.get_movements_summary(
+                    token,
+                    date_from=from_ms,
+                    date_to=to_ms,
+                    tipo=tipo,
+                    product_id=product_id,
+                    supplier_id=supplier_id,
+                ),
+                auth_client.list_movements(
+                    token,
+                    page=page,
+                    per_page=self.per_page,
+                    tipo=tipo,
+                    product_id=product_id,
+                    date_from=from_ms,
+                    date_to=to_ms,
+                    supplier_id=supplier_id,
+                ),
+            )
+        else:
+            movements = await auth_client.list_movements(
                 token,
                 page=page,
                 per_page=self.per_page,
@@ -417,11 +775,14 @@ class ReportState(rx.State):
                 date_from=from_ms,
                 date_to=to_ms,
                 supplier_id=supplier_id,
-            ),
-        )
-        self.movement_total = summary["total_movimentacoes"]
-        self.entry_quantity_total = self._format_quantity(summary["quantidade_entradas"])
-        self.exit_quantity_total = self._format_quantity(summary["quantidade_saidas"])
+            )
+
+        # Swap results and applied filters only after every required response succeeds.
+        if summary is not None:
+            self.movement_total = summary["total_movimentacoes"]
+            self.entry_quantity_total = self._format_quantity(summary["quantidade_entradas"])
+            self.exit_quantity_total = self._format_quantity(summary["quantidade_saidas"])
+            self.summary_loaded_at = time.monotonic()
         self.movements = [
             self._movement_row(item)
             for item in movements["items"]
@@ -432,18 +793,23 @@ class ReportState(rx.State):
         self.total_pages = max(1, int(movements.get("pageTotal") or 0))
         self.next_page = int(movements["nextPage"]) if movements.get("nextPage") is not None else None
         self.prev_page = int(movements["prevPage"]) if movements.get("prevPage") is not None else None
+        (
+            self.applied_start_date,
+            self.applied_end_date,
+            self.applied_filter_type,
+            self.applied_filter_product_id,
+            self.applied_filter_supplier_id,
+        ) = filter_values
+        self.report_data_loaded = True
+        self.report_loaded_at = time.monotonic()
+        self.report_results_stale = False
+        self.report_retry_available = False
 
     async def apply_filters(self):
-        self.current_page = 1
-        self.applied_start_date = self.start_date
-        self.applied_end_date = self.end_date
-        self.applied_filter_type = self.filter_type
-        self.applied_filter_product_id = self.filter_product_id
-        self.applied_filter_supplier_id = self.filter_supplier_id
-        self.movement_total = 0
-        self.entry_quantity_total = "0"
-        self.exit_quantity_total = "0"
-        return ReportState.load_report(1)
+        if self._report_results_fresh() and not self.filters_dirty:
+            self.error_message = ""
+            return
+        return ReportState.load_report(1, True)
 
     async def clear_filters(self):
         self.start_date = ""
@@ -451,23 +817,22 @@ class ReportState(rx.State):
         self.filter_type = ""
         self.filter_product_id = ""
         self.filter_supplier_id = ""
-        self.applied_start_date = ""
-        self.applied_end_date = ""
-        self.applied_filter_type = ""
-        self.applied_filter_product_id = ""
-        self.applied_filter_supplier_id = ""
         self.product_query = ""
         self.supplier_query = ""
-        self.current_page = 1
-        self.movement_total = 0
-        self.entry_quantity_total = "0"
-        self.exit_quantity_total = "0"
-        return ReportState.load_report(1)
+        if self._report_results_fresh() and not self.filters_dirty:
+            self.error_message = ""
+            return
+        return ReportState.load_report(1, True)
 
-    async def load_report(self, page: int = 1):
+    async def load_report(self, page: int = 1, apply_draft: bool = False):
+        filter_values = self._draft_filter_values() if apply_draft else self._applied_filter_values()
+        if self._report_results_fresh() and page == 1 and filter_values == self._applied_filter_values():
+            self.error_message = ""
+            return
         self.is_loading = True
         self.error_message = ""
-        self.movements = []
+        self.report_retry_page = page
+        self.report_retry_apply_draft = apply_draft
         yield
         token = await self._session_token()
         if not token:
@@ -475,21 +840,69 @@ class ReportState(rx.State):
             yield rx.redirect("/")
             return
         try:
-            await self._load_report_data(token, page)
+            await self._load_report_data(token, page, filter_values)
         except XanoAuthError:
-            self.error_message = "Sua sessÃ£o expirou. FaÃ§a login novamente."
+            self._clear_report_results()
+            self.error_message = "Sua sess\u00e3o expirou. Fa\u00e7a login novamente."
             yield rx.redirect("/")
         except XanoPermissionError:
-            self.error_message = "VocÃª nÃ£o possui permissÃ£o para visualizar os relatÃ³rios."
+            self._clear_report_results()
+            self.error_message = "Voc\u00ea n\u00e3o possui permiss\u00e3o para visualizar os relat\u00f3rios."
         except XanoRequestError as exc:
-            self.error_message = self._request_error_message(exc)
-        except (XanoConnectionError, XanoServerError, XanoError):
-            self.error_message = "Não foi possível carregar os relatórios. Tente novamente."
+            message = self._request_error_message(exc)
+            self._set_report_failure(
+                message,
+                apply_draft=apply_draft,
+                retryable=_temporary_report_read_error(exc),
+            )
+        except (XanoConnectionError, XanoServerError, XanoError) as exc:
+            message = (
+                exc.message
+                if getattr(exc, "status_code", None) == 429
+                else "N\u00e3o foi poss\u00edvel carregar os relat\u00f3rios. Tente novamente."
+            )
+            self._set_report_failure(
+                message,
+                apply_draft=apply_draft,
+                retryable=_temporary_report_read_error(exc),
+            )
         except Exception as exc:
             logger.exception("Reports load failed: exception_type=%s", type(exc).__name__)
-            self.error_message = "Não foi possível carregar os relatórios. Tente novamente."
+            message = "N\u00e3o foi poss\u00edvel carregar os relat\u00f3rios. Tente novamente."
+            self._set_report_failure(
+                message,
+                apply_draft=apply_draft,
+                retryable=False,
+            )
         finally:
             self.is_loading = False
+
+    def _set_report_failure(self, message: str, *, apply_draft: bool, retryable: bool) -> None:
+        self.report_retry_available = retryable
+        self.report_results_stale = self.report_data_loaded
+        if self.report_results_stale:
+            if apply_draft and self.filters_dirty:
+                context = (
+                    "Os novos filtros não foram aplicados. Os resultados anteriores continuam visíveis, "
+                    "correspondem aos filtros aplicados anteriormente e podem estar desatualizados. "
+                )
+            else:
+                context = (
+                    "Os resultados anteriores continuam visíveis e podem estar desatualizados; "
+                    "eles correspondem aos filtros aplicados anteriormente. "
+                )
+        elif apply_draft:
+            context = "Os novos filtros não foram aplicados. "
+        else:
+            context = ""
+        self.error_message = context + message
+
+    def retry_report(self):
+        if not self.report_retry_available or self.is_loading:
+            return
+        return ReportState.load_report(
+            self.report_retry_page, self.report_retry_apply_draft
+        )
 
     def load_previous_page(self):
         if self.prev_page is not None:
@@ -521,7 +934,7 @@ class ReportState(rx.State):
         return rows
 
     async def export_excel(self):
-        if self.export_loading:
+        if self.export_loading or not self.can_export:
             return
         self.export_loading = True
         self.error_message = ""
@@ -660,7 +1073,7 @@ class ReportState(rx.State):
         return output.getvalue()
 
     async def export_pdf(self):
-        if self.export_loading:
+        if self.export_loading or not self.can_export:
             return
         self.export_loading = True
         self.error_message = ""
@@ -887,6 +1300,11 @@ def relatorios() -> rx.Component:
                         rx.vstack(rx.text("Data final"), rx.input(type="date", value=ReportState.end_date, on_change=ReportState.change_end_date, width="100%"), flex="1", min_width="220px", align="stretch", spacing="1"),
                         width="100%", wrap="wrap", align="end", spacing="3",
                     ),
+                    rx.cond(
+                        ReportState.product_options_loading | ReportState.supplier_options_loading,
+                        rx.text("Carregando opções de filtro...", color="#64748B"),
+                        rx.fragment(),
+                    ),
                     rx.hstack(
                         rx.vstack(
                             rx.text("Tipo"),
@@ -918,6 +1336,28 @@ def relatorios() -> rx.Component:
                                 on_load_more=ReportState.load_more_products,
                                 placeholder="Todos os produtos",
                                 placeholder_color="#cbd5e1",
+                                empty_message=ReportState.product_options_empty_message,
+                            ),
+                            rx.cond(
+                                ReportState.filter_options_error_kind == "product",
+                                rx.vstack(
+                                    rx.text(
+                                        ReportState.filter_options_message,
+                                        color="#92400E",
+                                        size="1",
+                                    ),
+                                    rx.button(
+                                        "Tentar novamente",
+                                        on_click=ReportState.retry_product_options,
+                                        disabled=ReportState.product_options_loading,
+                                        variant="ghost",
+                                        size="1",
+                                        style={"padding": "0 8px", "height": "26px"},
+                                    ),
+                                    align="start",
+                                    spacing="1",
+                                ),
+                                rx.fragment(),
                             ),
                             flex="1.5", min_width="220px", align="stretch", spacing="1",
                         ),
@@ -937,6 +1377,28 @@ def relatorios() -> rx.Component:
                                 on_load_more=ReportState.load_more_suppliers,
                                 placeholder="Todos os fornecedores",
                                 placeholder_color="#cbd5e1",
+                                empty_message=ReportState.supplier_options_empty_message,
+                            ),
+                            rx.cond(
+                                ReportState.filter_options_error_kind == "supplier",
+                                rx.vstack(
+                                    rx.text(
+                                        ReportState.filter_options_message,
+                                        color="#92400E",
+                                        size="1",
+                                    ),
+                                    rx.button(
+                                        "Tentar novamente",
+                                        on_click=ReportState.retry_supplier_options,
+                                        disabled=ReportState.supplier_options_loading,
+                                        variant="ghost",
+                                        size="1",
+                                        style={"padding": "0 8px", "height": "26px"},
+                                    ),
+                                    align="start",
+                                    spacing="1",
+                                ),
+                                rx.fragment(),
                             ),
                             flex="1.5", min_width="220px", align="stretch", spacing="1",
                         ),
@@ -947,10 +1409,38 @@ def relatorios() -> rx.Component:
                         rx.button("Limpar", on_click=ReportState.clear_filters, variant="soft", disabled=ReportState.is_loading),
                         width="100%", justify="end",
                     ),
+                    rx.cond(
+                        ReportState.filters_dirty,
+                        rx.text(
+                            "Filtros alterados ainda não aplicados. Tabela e indicadores continuam mostrando os filtros aplicados anteriormente.",
+                            color="#64748b",
+                            size="2",
+                        ),
+                        rx.fragment(),
+                    ),
                     width="100%", align="stretch", spacing="3",
                 ),
             ),
             rx.cond(ReportState.error_message != "", rx.text(ReportState.error_message, color="#b91c1c")),
+            rx.cond(
+                ReportState.report_retry_available,
+                rx.button(
+                    "Tentar novamente",
+                    on_click=ReportState.retry_report,
+                    disabled=ReportState.is_loading,
+                    variant="soft",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                ReportState.report_results_stale,
+                rx.text(
+                    "Os dados exibidos são da última consulta bem-sucedida e podem estar desatualizados.",
+                    color="#92400E",
+                    size="2",
+                ),
+                rx.fragment(),
+            ),
             rx.flex(
                 _report_card("Movimentações", ReportState.movement_total),
                 _report_card("Entradas (unidades)", ReportState.entry_quantity_total),
@@ -962,8 +1452,8 @@ def relatorios() -> rx.Component:
                 rx.vstack(
                     rx.hstack(
                         rx.spacer(),
-                        rx.button("Exportar PDF", on_click=ReportState.export_pdf, disabled=ReportState.is_loading | ReportState.export_loading),
-                        rx.button("Exportar Excel", on_click=ReportState.export_excel, disabled=ReportState.is_loading | ReportState.export_loading),
+                        rx.button("Exportar PDF", on_click=ReportState.export_pdf, disabled=ReportState.is_loading | ReportState.export_loading | ~ReportState.can_export),
+                        rx.button("Exportar Excel", on_click=ReportState.export_excel, disabled=ReportState.is_loading | ReportState.export_loading | ~ReportState.can_export),
                         width="100%", align="center", wrap="wrap",
                     ),
                     rx.cond(

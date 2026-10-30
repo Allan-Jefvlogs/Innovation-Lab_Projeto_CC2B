@@ -1,6 +1,7 @@
 """Página de Login integrada com autenticação real do Xano."""
 
 import reflex as rx
+from ..components.brand import brand_mark, brand_wordmark
 from ..state.auth import AuthState
 
 
@@ -60,134 +61,11 @@ def login() -> rx.Component:
         rx.center(
             rx.vstack(
                 rx.hstack(
-                    rx.box(
-                        rx.box(
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#60A5FA",
-                                clip_path="polygon(50% 0, 100% 25%, 50% 50%, 0 25%)",
-                            ),
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#2563EB",
-                                clip_path="polygon(0 25%, 50% 50%, 50% 100%, 0 75%)",
-                            ),
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#1D4ED8",
-                                clip_path="polygon(50% 50%, 100% 25%, 100% 75%, 50% 100%)",
-                            ),
-                            position="absolute",
-                            left="0",
-                            bottom="0",
-                            width="42px",
-                            height="48px",
-                        ),
-                        rx.box(
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#60A5FA",
-                                clip_path="polygon(50% 0, 100% 25%, 50% 50%, 0 25%)",
-                            ),
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#2563EB",
-                                clip_path="polygon(0 25%, 50% 50%, 50% 100%, 0 75%)",
-                            ),
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#1D4ED8",
-                                clip_path="polygon(50% 50%, 100% 25%, 100% 75%, 50% 100%)",
-                            ),
-                            position="absolute",
-                            left="27px",
-                            bottom="0",
-                            width="42px",
-                            height="48px",
-                        ),
-                        rx.box(
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#60A5FA",
-                                clip_path="polygon(50% 0, 100% 25%, 50% 50%, 0 25%)",
-                            ),
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#2563EB",
-                                clip_path="polygon(0 25%, 50% 50%, 50% 100%, 0 75%)",
-                            ),
-                            rx.box(
-                                position="absolute",
-                                top="0",
-                                left="0",
-                                width="100%",
-                                height="100%",
-                                background="#1D4ED8",
-                                clip_path="polygon(50% 50%, 100% 25%, 100% 75%, 50% 100%)",
-                            ),
-                            position="absolute",
-                            right="0",
-                            top="0",
-                            width="42px",
-                            height="48px",
-                        ),
-                        width="96px",
-                        height="96px",
-                        position="relative",
-                        flex_shrink="0",
-                    ),
+                    brand_mark(),
                     rx.vstack(
-                        rx.hstack(
-                            rx.text(
-                                "Nex",
-                                color="#0F172A",
-                                font_size="clamp(2.1rem, 5vw, 2.75rem)",
-                                font_weight="800",
-                                line_height="1.05",
-                            ),
-                            rx.text(
-                                "Stock",
-                                color="#2563EB",
-                                font_size="clamp(2.1rem, 5vw, 2.75rem)",
-                                font_weight="800",
-                                line_height="1.05",
-                            ),
-                            spacing="0",
-                        ),
+                        brand_wordmark("clamp(2.1rem, 5vw, 2.75rem)"),
                         rx.text(
-                            "Gestão inteligente de estoque",
+                            "Gest\u00e3o inteligente de estoque",
                             color="#64748B",
                             font_size="clamp(0.9rem, 2.5vw, 1.1rem)",
                         ),
@@ -226,6 +104,22 @@ def login() -> rx.Component:
                         rx.cond(
                             AuthState.password_change_notice != "",
                             rx.callout(AuthState.password_change_notice, icon="circle_check", color_scheme="green", width="100%"),
+                        ),
+                        rx.cond(
+                            (AuthState.session_validation == "temporarily_unavailable")
+                            | (AuthState.session_validation == "forbidden"),
+                            rx.vstack(
+                                rx.text(AuthState.session_status_message, role="status"),
+                                rx.button(
+                                    "Tentar validar sessão novamente",
+                                    type="button",
+                                    on_click=AuthState.retry_session_validation,
+                                    disabled=AuthState.session_validation == "validating",
+                                ),
+                                width="100%",
+                                align="stretch",
+                            ),
+                            rx.fragment(),
                         ),
                         rx.form(
                             rx.vstack(

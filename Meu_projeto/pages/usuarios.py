@@ -72,9 +72,8 @@ class UserState(rx.State):
     async def _session(self) -> tuple[str, int | None, int]:
         auth_state = await self.get_state(AuthState)
         token = str(auth_state.auth_token or "").strip()
-        if token and not auth_state.is_authenticated:
-            if not await auth_state.restore_session():
-                return "", None, 0
+        if not token or not auth_state.session_is_valid or not auth_state.is_administrator:
+            return "", None, 0
         return str(auth_state.auth_token or "").strip(), auth_state.inventory_profile_id, auth_state.user_id
 
     @staticmethod

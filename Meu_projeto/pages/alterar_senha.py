@@ -7,6 +7,7 @@ import reflex as rx
 
 from ..services.xano_client import XanoAuthError, XanoError, XanoRequestError, auth_client
 from ..state import AuthState
+from ..components.layout import session_validation_panel
 
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,14 @@ class InitialPasswordState(rx.State):
             return
         auth_state = await self.get_state(AuthState)
         token = str(auth_state.auth_token or "").strip()
-        if not token:
+        if not auth_state.session_is_valid:
+            if auth_state.session_validation in {"temporarily_unavailable", "forbidden", "validating"}:
+                self.error_message = auth_state.session_status_message
+                return
             yield rx.redirect("/")
+            return
+        if not token or not auth_state.must_change_password:
+            yield rx.redirect("/dashboard")
             return
         self.is_saving = True
         yield
@@ -83,7 +90,7 @@ def _password_field(label: str, name: str, visible: Any, toggle: Any) -> rx.Comp
 
 
 def alterar_senha() -> rx.Component:
-    return rx.center(
+    form = rx.center(
         rx.vstack(
             rx.heading("NexStock", size="7", color="#2563EB"),
             rx.heading("Alteração de senha", size="6"),
@@ -104,3 +111,4 @@ def alterar_senha() -> rx.Component:
         ),
         width="100%", min_height="100vh", padding="1rem", background="#f8fafc",
     )
+    return rx.cond(AuthState.session_is_valid, form, session_validation_panel())

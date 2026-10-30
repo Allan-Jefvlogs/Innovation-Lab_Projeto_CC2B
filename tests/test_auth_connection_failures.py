@@ -11,6 +11,7 @@ from Meu_projeto.pages.login import login as login_page
 from Meu_projeto.services.xano_client import (
     XanoAuthClient,
     XanoConnectionError,
+    XanoRequestCoordinator,
 )
 from Meu_projeto.state.auth import AuthState
 
@@ -40,6 +41,8 @@ def _auth_state() -> AuthState:
         "is_authenticated": False,
         "is_loading": False,
         "error_message": "",
+        "session_validation": "invalid",
+        "session_retry_after_epoch": 0.0,
     }
     for name, value in defaults.items():
         setattr(state, name, value)
@@ -77,7 +80,10 @@ class AuthConnectionFailureTests(unittest.IsolatedAsyncioTestCase):
                     "Meu_projeto.services.xano_client.httpx.AsyncClient",
                     return_value=fake_client,
                 ):
-                    client = XanoAuthClient(base_url="https://example.invalid")
+                    client = XanoAuthClient(
+                        base_url="https://example.invalid",
+                        coordinator=XanoRequestCoordinator(5, 20),
+                    )
                     with self.assertRaises(XanoConnectionError) as caught:
                         await client.login("test@example.invalid", "not-a-real-password")
 
