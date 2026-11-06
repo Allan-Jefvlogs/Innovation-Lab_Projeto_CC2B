@@ -61,6 +61,11 @@ query "purchase_requests/by_id/{request_id}/cancel" verb=PATCH {
     var $original_email_delivery {
       value = null
     }
+    // Provider copied out of $original_email_delivery so the history never
+    // reads a field from a null record (requests without recipient email).
+    var $original_email_provider {
+      value = null
+    }
 
     try_catch {
       try {
@@ -114,6 +119,14 @@ query "purchase_requests/by_id/{request_id}/cancel" verb=PATCH {
                   where = $db.purchase_request_email_delivery.purchase_request_id == $request_in_transaction.id && $db.purchase_request_email_delivery.tipo_evento == "solicitacao"
                   return = {type: "single"}
                 } as $original_email_delivery
+
+                conditional {
+                  if ($original_email_delivery != null) {
+                    var.update $original_email_provider {
+                      value = $original_email_delivery.provedor
+                    }
+                  }
+                }
 
                 conditional {
                   if ($original_email_delivery != null && (($original_email_delivery.status == "enviado" && $original_email_delivery.id_mensagem_provedor != null) || $original_email_delivery.status == "pendente" || $original_email_delivery.status == "processando" || $original_email_delivery.status == "indeterminado")) {
@@ -189,7 +202,7 @@ query "purchase_requests/by_id/{request_id}/cancel" verb=PATCH {
                       active_product_id_liberado: true,
                       notificacao_cancelamento_estado: $cancel_notice_status,
                       notificacao_cancelamento_codigo: $cancel_notice_error,
-                      notificacao_cancelamento_provedor: $original_email_delivery.provedor
+                      notificacao_cancelamento_provedor: $original_email_provider
                     }
                   }
                 } as $cancellation_event
@@ -322,6 +335,19 @@ query "purchase_requests/by_id/{request_id}/cancel" verb=PATCH {
         var.update $cancel_error {
           value = "PURCHASE_REQUEST_CANCEL_FAILED"
         }
+        // Keep the real failure visible: the remote importer rejects `throw`
+        // in this endpoint, so the detail is logged in event_log (outside the
+        // rolled-back transaction) and the response keeps the stable code.
+        db.add event_log {
+          data = {
+            user_id: $auth.id,
+            action: "purchase_request_cancel_failed",
+            metadata: {
+              request_id: $input.request_id,
+              erro: $error.message
+            }
+          }
+        } as $cancel_failure_log
       }
     }
 

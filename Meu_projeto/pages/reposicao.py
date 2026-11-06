@@ -14,6 +14,11 @@ from typing import Any
 import reflex as rx
 
 from ..components.layout import page, section
+from ..services.purchase_request_email import (
+    CANCELAMENTO_DESTINATARIO,
+    enviar_email_cancelamento_compra,
+    enviar_email_solicitacao_compra,
+)
 from ..services.session_read_cache import CACHE_MISS, session_read_cache
 from ..services.xano_client import (
     XanoAuthError,
@@ -706,12 +711,6 @@ class ReplenishmentState(rx.State):
             self.request_create_error = "Informe um e-mail de destinatário válido."
             yield
             return
-        if not self.request_email_contract_enabled and recipient_email:
-            self.request_create_error = (
-                "A versão publicada ainda não salva o destinatário. Aguarde a atualização da integração antes de enviar."
-            )
-            yield
-            return
         if product_id <= 0 or quantity is None or urgency_code is None:
             self.request_create_error = "Confira a quantidade positiva, a urgência e o e-mail exigido pela integração ativa."
             yield
@@ -807,6 +806,22 @@ class ReplenishmentState(rx.State):
             "falhou": "O envio de e-mail está sinalizado como falho; a solicitação permanece registrada.",
             "enviado": "O backend informa que o e-mail foi enviado.",
         }[email_status]
+        if recipient_email:
+            sent = await enviar_email_solicitacao_compra(
+                destinatario=recipient_email,
+                solicitacao_id=request["id"],
+                codigo=self.request_product_code,
+                nome=self.request_product_name,
+                quantidade=quantity,
+                unidade=self.request_product_unit,
+                urgencia=self.request_urgency,
+                usuario=getattr(auth, "user_name", ""),
+            )
+            email_detail = (
+                f"E-mail enviado para {recipient_email}."
+                if sent
+                else f"Não foi possível enviar o e-mail para {recipient_email}; a solicitação permanece registrada."
+            )
         _invalidate_purchase_reads(str(auth.auth_token or "").strip())
         self.request_success_message = (
             f"Solicitação {request['id']} já estava registrada. Status: {request['status']}. {email_detail}"
@@ -958,6 +973,18 @@ class ReplenishmentState(rx.State):
             if already_cancelled
             else "Solicitação cancelada. O estoque não foi alterado."
         )
+        if not already_cancelled:
+            sent = await enviar_email_cancelamento_compra(
+                solicitacao_id=request_id,
+                produto=self.cancel_product_label,
+                justificativa=justification,
+                usuario=getattr(auth, "user_name", ""),
+            )
+            self.cancel_success_message += (
+                f" Aviso enviado para {CANCELAMENTO_DESTINATARIO}."
+                if sent
+                else " Não foi possível enviar o e-mail de aviso."
+            )
         self.cancel_error_message = ""
         self.cancel_form_open = False
         self.cancel_request_id = ""
@@ -1060,18 +1087,9 @@ def _request_form() -> rx.Component:
                         max_length=254,
                     ),
                     rx.text(
-                        "A solicitação será encaminhada ao endereço informado quando a integração estiver ativa.",
+                        "Se preenchido, a solicitação será enviada por e-mail ao endereço informado.",
                         size="2",
                         color="#64748b",
-                    ),
-                    rx.cond(
-                        ~ReplenishmentState.request_email_contract_enabled,
-                        rx.text(
-                            "A versão publicada ainda não salva este campo. Nenhum e-mail é enviado nesta fase.",
-                            size="2",
-                            color="#64748b",
-                        ),
-                        rx.fragment(),
                     ),
                     rx.cond(
                         ReplenishmentState.request_create_error != "",

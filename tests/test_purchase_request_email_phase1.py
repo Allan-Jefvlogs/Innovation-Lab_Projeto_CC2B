@@ -25,6 +25,9 @@ def _state(*, contract_enabled: bool, email: str = "") -> ReplenishmentState:
         "integration_available": True,
         "can_create_request": True,
         "request_product_id": "41",
+        "request_product_code": "P41",
+        "request_product_name": "Parafuso",
+        "request_product_unit": "un",
         "request_quantity": "2.5",
         "request_urgency": "Alta",
         "request_recipient_email": email,
@@ -133,7 +136,7 @@ class RecipientEmailClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RecipientEmailUiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_legacy_mode_keeps_old_post_shape_but_blocks_unsaved_recipient(self):
+    async def test_legacy_mode_keeps_old_post_shape_and_emails_filled_recipient(self):
         state = _state(contract_enabled=False)
         auth = _auth()
         async def no_refresh(force=False):
@@ -144,16 +147,24 @@ class RecipientEmailUiTests(unittest.IsolatedAsyncioTestCase):
             patch.object(replenishment_module.auth_client, "create_purchase_request", new_callable=AsyncMock, return_value=self._response()) as post,
             patch.object(ReplenishmentState, "_load_data", side_effect=no_refresh),
             patch.object(replenishment_module.secrets, "token_urlsafe", return_value="legacy-key"),
+            patch.object(replenishment_module, "enviar_email_solicitacao_compra", new_callable=AsyncMock, return_value=True) as send,
         ):
             await _drain(state.submit_purchase_request())
             post.assert_awaited_once_with(
                 "test-session", produto_id=41, quantidade_solicitada="2.5",
                 urgencia="alta", chave_idempotencia="legacy-key",
             )
-            state2 = _state(contract_enabled=False, email="compras@empresa.com.br")
+            send.assert_not_awaited()
+
+            state2 = _state(contract_enabled=False, email=" compras@empresa.com.br ")
             await _drain(state2.submit_purchase_request())
-            self.assertIn("ainda não salva", state2.request_create_error)
-            self.assertEqual(post.await_count, 1)
+            self.assertEqual(post.await_count, 2)
+            self.assertNotIn("email_destinatario", post.await_args.kwargs)
+            self.assertEqual(state2.request_create_error, "")
+            send.assert_awaited_once()
+            self.assertEqual(send.await_args.kwargs["destinatario"], "compras@empresa.com.br")
+            self.assertEqual(send.await_args.kwargs["solicitacao_id"], 55)
+            self.assertIn("E-mail enviado para compras@empresa.com.br", state2.request_success_message)
 
     async def test_enabled_contract_requires_email_and_sends_normalized_value(self):
         auth = _auth()
@@ -205,11 +216,12 @@ class RecipientEmailUiTests(unittest.IsolatedAsyncioTestCase):
             patch.object(replenishment_module.auth_client, "create_purchase_request", new_callable=AsyncMock, return_value=result) as post,
             patch.object(ReplenishmentState, "_load_data", side_effect=no_refresh),
             patch.object(replenishment_module.secrets, "token_urlsafe", return_value="email-success-key"),
+            patch.object(replenishment_module, "enviar_email_solicitacao_compra", new_callable=AsyncMock, return_value=False),
         ):
             await _drain(state.submit_purchase_request())
 
         self.assertEqual(post.await_args.kwargs["email_destinatario"], "compras@empresa.com.br")
-        self.assertIn("sinalizado como falho", state.request_success_message)
+        self.assertIn("Não foi possível enviar o e-mail", state.request_success_message)
         self.assertNotIn("E-mail enviado", state.request_success_message)
         for key in keys:
             self.assertIs(session_read_cache.get(key, 60)[0], CACHE_MISS)
@@ -219,8 +231,67 @@ class RecipientEmailUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"E-mail do destinatário"', source)
         self.assertIn('placeholder="exemplo@empresa.com.br"', source)
         self.assertIn('type="email"', source)
-        self.assertIn("A solicitação será encaminhada ao endereço informado", source)
-        self.assertIn("Nenhum e-mail é enviado nesta fase", source)
+        self.assertIn("a solicitação será enviada por e-mail ao endereço informado", source)
+        self.assertNotIn("Nenhum e-mail é enviado nesta fase", source)
+
+    async def test_successful_cancel_emails_fixed_recipient_only_once(self):
+        def cancel_state():
+            state = object.__new__(ReplenishmentState)
+            object.__setattr__(state, "dirty_vars", set())
+            for name, value in {
+                "session_fingerprint_cache": "",
+                "cancel_submission_in_progress": False,
+                "cancel_request_id": "6",
+                "cancel_justification": " Pedido duplicado ",
+                "cancel_product_label": "P41 — Parafuso",
+                "cancel_retry_after_epoch": 0.0,
+                "cancel_attempt_ambiguous": False,
+                "cancel_error_message": "",
+                "cancel_success_message": "",
+                "cancel_form_open": True,
+                "requestable_page": 1,
+                "requested_page": 1,
+            }.items():
+                setattr(state, name, value)
+            return state
+
+        auth = _auth()
+        auth.has_permission = lambda code: code == "purchase_request.cancel"
+
+        async def no_refresh(force=False):
+            if False:
+                yield
+
+        state = cancel_state()
+        cancelled = {"solicitacao": {"id": 6, "status": "cancelada"}}
+        with (
+            patch.object(ReplenishmentState, "get_state", new_callable=AsyncMock, return_value=auth),
+            patch.object(replenishment_module.auth_client, "cancel_purchase_request", new_callable=AsyncMock, return_value=cancelled),
+            patch.object(ReplenishmentState, "_load_data", side_effect=no_refresh),
+            patch.object(replenishment_module, "enviar_email_cancelamento_compra", new_callable=AsyncMock, return_value=True) as send,
+        ):
+            await _drain(state.confirm_cancel_request())
+
+        send.assert_awaited_once()
+        self.assertEqual(send.await_args.kwargs["solicitacao_id"], 6)
+        self.assertEqual(send.await_args.kwargs["justificativa"], "Pedido duplicado")
+        self.assertIn("Aviso enviado para mateus.dotta@aluno.impacta.edu.br", state.cancel_success_message)
+
+        already = cancel_state()
+        with (
+            patch.object(ReplenishmentState, "get_state", new_callable=AsyncMock, return_value=auth),
+            patch.object(
+                replenishment_module.auth_client, "cancel_purchase_request", new_callable=AsyncMock,
+                side_effect=replenishment_module.XanoRequestError(
+                    "já cancelada", "PURCHASE_REQUEST_ALREADY_CANCELLED", 400, {}
+                ),
+            ),
+            patch.object(ReplenishmentState, "_load_data", side_effect=no_refresh),
+            patch.object(replenishment_module, "enviar_email_cancelamento_compra", new_callable=AsyncMock) as send_again,
+        ):
+            await _drain(already.confirm_cancel_request())
+        send_again.assert_not_awaited()
+        self.assertIn("já estava cancelada", already.cancel_success_message)
 
     def _response(self):
         return {

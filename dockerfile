@@ -2,6 +2,9 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# Mostra os print() imediatamente nos logs do container
+ENV PYTHONUNBUFFERED=1
+
 # Dependências de sistema
 RUN apt-get update && apt-get install -y \
     curl \
