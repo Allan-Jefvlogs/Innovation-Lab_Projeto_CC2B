@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 from ..components.layout import mock_table, page, section
 from ..components.searchable_select import normalize_search_text, searchable_select
+from ..services.stock_alert import STATUS_ENVIADO, STATUS_FALHOU, enviar_alerta_estoque_minimo
 from ..services.xano_client import (
     XanoAuthError,
     XanoConnectionError,
@@ -548,6 +549,8 @@ class ExitState(rx.State):
     is_submitting: bool = False
     error_message: str = ""
     success_message: str = ""
+    alert_message: str = ""
+    alert_error: str = ""
 
     @rx.var
     def filtered_products(self) -> list[dict[str, str]]:
@@ -579,6 +582,8 @@ class ExitState(rx.State):
         self.is_loading = True
         self.error_message = ""
         self.success_message = ""
+        self.alert_message = ""
+        self.alert_error = ""
         self.product_error = ""
         self._clear_exit_fields()
         self.products = []
@@ -612,6 +617,7 @@ class ExitState(rx.State):
                     "quantidade_disponivel": str(item.get("quantidade_disponivel", "")),
                     "codigo": str(item.get("codigo") or ""),
                     "nome": str(item.get("nome") or ""),
+                    "estoque_minimo": str(item.get("estoque_minimo", "")),
                 }
                 for item in stock_items
                 if isinstance(item, dict) and item.get("product_id") is not None
@@ -790,6 +796,8 @@ class ExitState(rx.State):
             return
         self.error_message = ""
         self.success_message = ""
+        self.alert_message = ""
+        self.alert_error = ""
         try:
             product_id = int(self.product_id)
         except (TypeError, ValueError):
@@ -838,6 +846,7 @@ class ExitState(rx.State):
 
         self.is_submitting = True
         yield
+        alert_context = None
         try:
             result = await auth_client.create_stock_exit(
                 token,
@@ -848,6 +857,19 @@ class ExitState(rx.State):
                 observacao=self.observacao.strip() or None,
             )
             saldo_atual = result.get("saldo_atual")
+            # Quantidade disponível após a Saída: a do Xano ou, sem ela, a carregada menos a retirada.
+            saldo_alerta = saldo_atual if saldo_atual is not None else str(stock_decimal - quantity_decimal)
+            alert_context = {
+                "destinatario": auth_state.user_email,
+                "movement_id": result.get("movement_id"),
+                "codigo": self.product_code,
+                "nome": self.product_name,
+                "saldo_atual": saldo_alerta,
+                "estoque_minimo": self.stock_by_product.get(str(product_id), {}).get("estoque_minimo"),
+                "quantidade": str(quantity_decimal),
+                "usuario": auth_state.user_name,
+                "data_hora": result.get("data_hora"),
+            }
             self.success_message = "Saída registrada com sucesso."
             if saldo_atual is not None:
                 self.success_message += f" Saldo atualizado: {saldo_atual}."
@@ -875,6 +897,23 @@ class ExitState(rx.State):
             self.error_message = "Não foi possível registrar a saída. Tente novamente."
         finally:
             self.is_submitting = False
+
+        if alert_context is not None:
+            yield
+            await self._send_minimum_stock_alert(alert_context)
+
+    async def _send_minimum_stock_alert(self, context: dict):
+        """Envia o alerta depois da Saída confirmada, sem afetar o resultado dela."""
+        try:
+            status = await enviar_alerta_estoque_minimo(**context)
+        except Exception:
+            logger.exception("Minimum stock alert failed unexpectedly")
+            status = STATUS_FALHOU
+        logger.info("Minimum stock alert status=%s movement_id=%s", status, context.get("movement_id"))
+        if status == STATUS_ENVIADO:
+            self.alert_message = f"Alerta de estoque mínimo enviado para {context['destinatario']}."
+        elif status == STATUS_FALHOU:
+            self.alert_error = "Saída registrada, mas o alerta por e-mail não foi enviado."
 
 
 class MovementHistoryState(rx.State):
@@ -1590,6 +1629,8 @@ def saida() -> rx.Component:
             rx.cond(ExitState.is_loading, rx.center(rx.spinner(), "Carregando dados...")),
             rx.cond(ExitState.error_message != "", rx.text(ExitState.error_message, color="#b91c1c")),
             rx.cond(ExitState.success_message != "", rx.text(ExitState.success_message, color="#15803d")),
+            rx.cond(ExitState.alert_message != "", rx.text(ExitState.alert_message, color="#15803d")),
+            rx.cond(ExitState.alert_error != "", rx.text(ExitState.alert_error, color="#b45309")),
             section(
                 "Dados da saída",
                 rx.vstack(
