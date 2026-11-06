@@ -9,14 +9,29 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Carrega variáveis do arquivo .env caso exista na raiz do projeto
-_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-if _env_path.exists():
+_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+
+
+def _carregar_env(caminho: Path = _ENV_PATH) -> None:
+    """Lê o .env da raiz sem dependência externa; não sobrescreve o ambiente."""
     try:
-        from dotenv import load_dotenv
-        load_dotenv(_env_path)
-    except ImportError:
-        pass
+        linhas = caminho.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for linha in linhas:
+        linha = linha.strip()
+        if not linha or linha.startswith("#") or "=" not in linha:
+            continue
+        nome, valor = linha.split("=", 1)
+        nome = nome.strip().removeprefix("export ").strip()
+        valor = valor.strip()
+        if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "'\"":
+            valor = valor[1:-1]
+        if nome and nome not in os.environ:
+            os.environ[nome] = valor
+
+
+_carregar_env()
 
 
 RESEND_EMAILS_URL = "https://api.resend.com/emails"

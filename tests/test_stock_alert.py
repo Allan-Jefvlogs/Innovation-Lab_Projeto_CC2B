@@ -203,6 +203,17 @@ class RegisterExitAlertTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send.await_args.kwargs["para"], "almoxarife@exemplo.com")
         self.assertEqual(send.await_args.kwargs["chave_idempotencia"], "alerta-estoque-42")
 
+    async def test_sem_saldo_atual_usa_quantidade_disponivel_menos_saida(self):
+        auth_state = _auth_state()
+        state = _exit_state(auth_state)
+        with (
+            self._patch_exit(saldo_atual=None),
+            patch(SEND_PATH, new_callable=AsyncMock, return_value="msg-1") as send,
+        ):
+            await _run(state)
+        send.assert_awaited_once()
+        self.assertIn("Saldo atual: 8", send.await_args.kwargs["texto"])
+
     async def test_saldo_acima_do_minimo_nao_envia(self):
         auth_state = _auth_state()
         state = _exit_state(auth_state, saldo="20")

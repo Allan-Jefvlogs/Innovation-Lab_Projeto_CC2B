@@ -15,6 +15,7 @@ from unittest.mock import patch
 import httpx
 
 from Meu_projeto.services.email_service import (
+    _carregar_env,
     DEFAULT_FROM_EMAIL,
     RESEND_EMAILS_URL,
     EmailEnvioError,
@@ -130,6 +131,29 @@ class EnviarEmailTest(unittest.TestCase):
                 recorder = _Recorder(response)
                 self._assert_error("EMAIL_PROVIDER_UNAVAILABLE", recorder)
                 self.assertEqual(len(recorder.requests), 1)
+
+
+class CarregarEnvTest(unittest.TestCase):
+    def test_le_env_sem_sobrescrever_ambiente(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as pasta:
+            caminho = Path(pasta) / ".env"
+            caminho.write_text(
+                '# comentario\nTESTE_ENV_NOVO="valor"\nTESTE_ENV_EXISTENTE=do_arquivo\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"TESTE_ENV_EXISTENTE": "do_ambiente"}, clear=False):
+                _carregar_env(caminho)
+                self.assertEqual(os.environ["TESTE_ENV_NOVO"], "valor")
+                self.assertEqual(os.environ["TESTE_ENV_EXISTENTE"], "do_ambiente")
+            os.environ.pop("TESTE_ENV_NOVO", None)
+
+    def test_arquivo_ausente_nao_falha(self):
+        from pathlib import Path
+
+        _carregar_env(Path("/caminho/inexistente/.env"))
 
 
 if __name__ == "__main__":

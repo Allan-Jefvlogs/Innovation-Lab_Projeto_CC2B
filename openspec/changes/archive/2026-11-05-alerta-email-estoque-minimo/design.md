@@ -26,7 +26,7 @@ Serviço novo, independente do Reflex, para que a regra possa ser testada sem mo
 
 ## Regra de disparo
 
-Toda Saída confirmada com `saldo_atual < estoque_minimo` gera alerta. `saldo_anterior` não é usado.
+Toda Saída confirmada com quantidade disponível após a Saída < `estoque_minimo` gera alerta. `saldo_anterior` não é usado. A quantidade disponível é o `saldo_atual` da resposta; sem ele, é `saldo_disponivel` carregado na página menos a quantidade da Saída. Se o mínimo ou o e-mail do usuário logado não puderem ser obtidos, o alerta é ignorado sem mensagem de erro.
 
 - Saldo zerado conta como abaixo do mínimo sempre que o mínimo for maior que zero.
 - Produto com `estoque_minimo` igual a zero nunca gera alerta, pois o saldo nunca fica negativo.
@@ -48,6 +48,12 @@ Toda Saída confirmada com `saldo_atual < estoque_minimo` gera alerta. `saldo_an
 | `nao_aplicavel`, `sem_destinatario` | Nenhuma mensagem. |
 
 A mensagem de sucesso da Saída nunca é substituída.
+
+## Configuração do envio
+
+`email_service` lê o `.env` da raiz com um leitor próprio, sem `python-dotenv` (que não está no `requirements.txt`), sem sobrescrever variáveis já definidas no ambiente. Assim `EMAIL_TOKEN` fica disponível mesmo quando o container é iniciado sem `--env-file`, desde que o `.env` esteja na imagem ou montado em `/app`.
+
+Causa da falha no primeiro teste manual: o import de `dotenv` falhava em silêncio, `EMAIL_TOKEN` ficava vazio e o envio terminava em `EMAIL_CONFIGURATION_MISSING`.
 
 ## Testes
 

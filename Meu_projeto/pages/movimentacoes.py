@@ -857,12 +857,14 @@ class ExitState(rx.State):
                 observacao=self.observacao.strip() or None,
             )
             saldo_atual = result.get("saldo_atual")
+            # Quantidade disponível após a Saída: a do Xano ou, sem ela, a carregada menos a retirada.
+            saldo_alerta = saldo_atual if saldo_atual is not None else str(stock_decimal - quantity_decimal)
             alert_context = {
                 "destinatario": auth_state.user_email,
                 "movement_id": result.get("movement_id"),
                 "codigo": self.product_code,
                 "nome": self.product_name,
-                "saldo_atual": saldo_atual,
+                "saldo_atual": saldo_alerta,
                 "estoque_minimo": self.stock_by_product.get(str(product_id), {}).get("estoque_minimo"),
                 "quantidade": str(quantity_decimal),
                 "usuario": auth_state.user_name,
@@ -907,6 +909,7 @@ class ExitState(rx.State):
         except Exception:
             logger.exception("Minimum stock alert failed unexpectedly")
             status = STATUS_FALHOU
+        logger.info("Minimum stock alert status=%s movement_id=%s", status, context.get("movement_id"))
         if status == STATUS_ENVIADO:
             self.alert_message = f"Alerta de estoque mínimo enviado para {context['destinatario']}."
         elif status == STATUS_FALHOU:
