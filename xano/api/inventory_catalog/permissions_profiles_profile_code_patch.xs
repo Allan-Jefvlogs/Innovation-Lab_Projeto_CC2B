@@ -148,6 +148,29 @@ query "permissions/profiles/{profile_code}" verb=PATCH {
               }
             } as $audit_event
 
+            db.get "user" {
+              field_name = "id"
+              field_value = $auth.id
+              output = ["id", "name"]
+            } as $audit_actor
+
+            precondition ($audit_actor != null) {
+              error_type = "accessdenied"
+              error = "AUDIT_ACTOR_NOT_FOUND"
+            }
+
+            db.add inventory_audit_log {
+              data = {
+                actor_user_id: $audit_actor.id,
+                actor_name: $audit_actor.name,
+                action_type: "permissoes_alteradas",
+                entity_type: "perfil",
+                entity_id: $target_profile.id,
+                summary: "Permissões do perfil alteradas.",
+                changes: {permissions_added: $added_codes, permissions_removed: $removed_codes, revision_before: $locked_profile.permission_revision, revision_after: $next_revision}
+              }
+            } as $general_audit_event
+
             var.update $replacement {
               value = {
                 profile_code       : $target_profile.code

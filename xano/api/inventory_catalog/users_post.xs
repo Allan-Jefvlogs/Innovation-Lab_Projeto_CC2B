@@ -46,33 +46,60 @@ query "users" verb=POST {
       error = "DUPLICATE_EMAIL"
     }
 
-    try_catch {
-      try {
-        db.add "user" {
-          enforce_hidden_fields = false
-          data = {
-            name: $input.name,
-            email: $input.email,
-            password: $input.password,
-            role: "member",
-            inventory_profile_id: $profile.id,
-            must_change_password: true
+    db.transaction {
+      stack {
+        try_catch {
+          try {
+            db.add "user" {
+              enforce_hidden_fields = false
+              data = {
+                name: $input.name,
+                email: $input.email,
+                password: $input.password,
+                role: "member",
+                inventory_profile_id: $profile.id,
+                must_change_password: true
+              }
+            } as $created_user
           }
-        } as $created_user
-      }
-      catch {
-        db.query "user" {
-          where = $db.user.email == $input.email
-          return = {type: "exists"}
-        } as $duplicate_after_write
-        precondition (!$duplicate_after_write) {
-          error_type = "inputerror"
-          error = "DUPLICATE_EMAIL"
+          catch {
+            db.query "user" {
+              where = $db.user.email == $input.email
+              return = {type: "exists"}
+            } as $duplicate_after_write
+            precondition (!$duplicate_after_write) {
+              error_type = "inputerror"
+              error = "DUPLICATE_EMAIL"
+            }
+            throw {
+              name = "USER_CREATE_FAILED"
+              value = "USER_CREATE_FAILED"
+            }
+          }
         }
-        throw {
-          name = "USER_CREATE_FAILED"
-          value = "USER_CREATE_FAILED"
+
+        db.get "user" {
+          field_name = "id"
+          field_value = $auth.id
+          output = ["id", "name"]
+        } as $audit_actor
+
+        precondition ($audit_actor != null) {
+          error_type = "accessdenied"
+          error = "AUDIT_ACTOR_NOT_FOUND"
         }
+
+        db.add inventory_audit_log {
+          data = {
+            actor_user_id: $audit_actor.id,
+            actor_name: $audit_actor.name,
+            action_type: "criado",
+            entity_type: "usuario",
+            entity_id: $created_user.id,
+            summary: "Usuário cadastrado.",
+            changes: {inventory_profile_id: $created_user.inventory_profile_id}
+          }
+        } as $audit_event
       }
     }
   }

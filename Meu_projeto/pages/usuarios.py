@@ -6,6 +6,24 @@ from typing import Any
 
 import reflex as rx
 
+from ..components.theme import (
+    BORDER,
+    BORDER_SOFT,
+    ERROR_TEXT,
+    NEUTRAL_STATUS_BACKGROUND,
+    NEUTRAL_STATUS_BORDER,
+    NEUTRAL_STATUS_TEXT,
+    PEACH,
+    PEACH_SOFT,
+    PEACH_TINT,
+    SUCCESS_TEXT,
+    SURFACE,
+    SURFACE_ALT,
+    TABLE_HEADER,
+    TEXT_MUTED,
+    WARNING_TEXT,
+)
+
 from ..components.layout import page, section
 from ..services.xano_client import (
     XanoAuthError,
@@ -474,8 +492,13 @@ def _user_row(item: dict[str, str]) -> rx.Component:
         rx.text(item["profile_name"]),
         rx.cond(
             item["is_active"] == "true",
-            rx.badge("Ativo", color_scheme="green"),
-            rx.badge("Inativo", color_scheme="gray"),
+            rx.badge("Ativo", color_scheme="jade"),
+            rx.badge(
+                "Inativo",
+                background_color=NEUTRAL_STATUS_BACKGROUND,
+                color=NEUTRAL_STATUS_TEXT,
+                border=f"1px solid {NEUTRAL_STATUS_BORDER}",
+            ),
         ),
         rx.button(
             rx.cond(UserState.loading_user_id == item["id"], rx.spinner(), "Editar"),
@@ -486,7 +509,7 @@ def _user_row(item: dict[str, str]) -> rx.Component:
         ),
         columns="6", width="100%", column_gap="8px",
         style={"grid_template_columns": USER_GRID, "align_items": "center"},
-        padding="0.75rem", border_bottom="1px solid #e5e7eb",
+        padding="0.75rem", border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -497,10 +520,10 @@ def _users_table() -> rx.Component:
             *[rx.text(label, weight="bold") for label in headers],
             columns="6", width="100%", column_gap="8px",
             style={"grid_template_columns": USER_GRID, "align_items": "center"},
-            padding="0.75rem", background="#f5f5f5", border_bottom="1px solid #ddd",
+            padding="0.75rem", background=TABLE_HEADER, border_bottom=f"1px solid {BORDER}",
         ),
         rx.vstack(rx.foreach(UserState.users, _user_row), width="100%", spacing="0"),
-        width="100%", overflow_x="auto", border="1px solid #ddd", border_radius="0.4rem",
+        width="100%", overflow_x="auto", border=f"1px solid {BORDER}", border_radius="0.4rem",
     )
 
 
@@ -535,12 +558,12 @@ def _user_modal() -> rx.Component:
                         ),
                         rx.vstack(
                             rx.text("Nome"),
-                            rx.input(value=UserState.form_name, on_change=UserState.change_name, disabled=UserState.is_saving, width="100%"),
+                            rx.input(value=UserState.form_name, on_change=UserState.change_name, auto_complete="off", disabled=UserState.is_saving, width="100%"),
                             width="100%", align="stretch", spacing="1",
                         ),
                         rx.vstack(
                             rx.text("E-mail"),
-                            rx.input(value=UserState.form_email, on_change=UserState.change_email, type="email", disabled=UserState.is_saving, width="100%"),
+                            rx.input(value=UserState.form_email, on_change=UserState.change_email, type="email", auto_complete="off", disabled=UserState.is_saving, width="100%"),
                             width="100%", align="stretch", spacing="1",
                         ),
                         rx.vstack(
@@ -557,7 +580,7 @@ def _user_modal() -> rx.Component:
                                 on_change=UserState.change_profile,
                                 disabled=UserState.is_saving | UserState.is_self_edit,
                             ),
-                            rx.cond(UserState.is_self_edit, rx.text("Seu próprio perfil não pode ser alterado.", size="1", color="#64748b")),
+                            rx.cond(UserState.is_self_edit, rx.text("Seu próprio perfil não pode ser alterado.", size="1", color=TEXT_MUTED)),
                             width="100%", align="stretch", spacing="1",
                         ),
                         rx.cond(
@@ -567,19 +590,26 @@ def _user_modal() -> rx.Component:
                                 width="100%", align="stretch", spacing="3",
                             ),
                         ),
-                        rx.cond(UserState.form_error != "", rx.text(UserState.form_error, color="#b91c1c")),
+                        rx.cond(UserState.form_error != "", rx.text(UserState.form_error, color=ERROR_TEXT)),
                         rx.hstack(
                             rx.cond(
                                 (UserState.editing_user_id != "") & ~UserState.is_self_edit,
                                 rx.button(
                                     rx.cond(UserState.editing_is_active, "Inativar usuário", "Ativar usuário"),
                                     type="button", on_click=UserState.open_status_confirmation,
-                                    variant="soft", color_scheme="orange", disabled=UserState.is_saving,
+                                    variant="soft", color=WARNING_TEXT, background_color=PEACH_SOFT,
+                                    border=f"1px solid {PEACH}", _hover={"background_color": PEACH_TINT},
+                                    disabled=UserState.is_saving,
                                 ),
                             ),
                             rx.cond(
                                 UserState.editing_user_id != "",
-                                rx.button("Resetar senha", type="button", on_click=UserState.open_reset_modal, variant="soft", color_scheme="orange", disabled=UserState.is_saving),
+                                rx.button(
+                                    "Resetar senha", type="button", on_click=UserState.open_reset_modal,
+                                    variant="soft", color=WARNING_TEXT, background_color=PEACH_SOFT,
+                                    border=f"1px solid {PEACH}", _hover={"background_color": PEACH_TINT},
+                                    disabled=UserState.is_saving,
+                                ),
                             ),
                             rx.spacer(),
                             rx.button("Cancelar", type="button", on_click=UserState.close_modal, variant="soft", disabled=UserState.is_saving),
@@ -591,7 +621,7 @@ def _user_modal() -> rx.Component:
                     on_submit=UserState.save_user,
                     width="100%",
                 ),
-                width="100%", max_width="34rem", padding="1.5rem", background="white",
+                width="100%", max_width="34rem", padding="1.5rem", background=SURFACE,
                 border_radius="0.75rem", box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
             ),
             position="fixed", top="0", left="0", right="0", bottom="0",
@@ -610,10 +640,10 @@ def _reset_password_modal() -> rx.Component:
                     rx.vstack(
                         rx.heading("Resetar senha", size="5"),
                         rx.text("Usuário: ", UserState.form_name),
-                        rx.text("Esta ação substituirá a senha atual por uma senha temporária. O usuário deverá criar uma nova senha no próximo acesso.", size="2", color="#64748b"),
+                        rx.text("Esta ação substituirá a senha atual por uma senha temporária. O usuário deverá criar uma nova senha no próximo acesso.", size="2", color=TEXT_MUTED),
                         _password_input("Nova senha inicial", "password", UserState.show_reset_password, UserState.toggle_reset_password, UserState.reset_loading),
                         _password_input("Confirmar nova senha inicial", "confirm_password", UserState.show_reset_password_confirm, UserState.toggle_reset_password_confirm, UserState.reset_loading),
-                        rx.cond(UserState.reset_error != "", rx.text(UserState.reset_error, color="#b91c1c")),
+                        rx.cond(UserState.reset_error != "", rx.text(UserState.reset_error, color=ERROR_TEXT)),
                         rx.hstack(
                             rx.spacer(),
                             rx.button("Cancelar", type="button", on_click=UserState.close_reset_modal, disabled=UserState.reset_loading, variant="soft"),
@@ -624,7 +654,7 @@ def _reset_password_modal() -> rx.Component:
                     ),
                     on_submit=UserState.submit_reset_password, width="100%",
                 ),
-                width="100%", max_width="34rem", padding="1.5rem", background="white",
+                width="100%", max_width="34rem", padding="1.5rem", background=SURFACE,
                 border_radius="0.75rem", box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
             ),
             position="fixed", top="0", left="0", right="0", bottom="0",
@@ -648,7 +678,7 @@ def _status_confirmation_modal() -> rx.Component:
                         "Ativar este usuário permitirá que ele acesse o sistema novamente.",
                     ),
                 ),
-                rx.cond(UserState.status_error != "", rx.text(UserState.status_error, color="#b91c1c")),
+                rx.cond(UserState.status_error != "", rx.text(UserState.status_error, color=ERROR_TEXT)),
                 rx.hstack(
                     rx.spacer(),
                     rx.button("Cancelar", on_click=UserState.close_status_confirmation, variant="soft", disabled=UserState.status_loading),
@@ -659,7 +689,7 @@ def _status_confirmation_modal() -> rx.Component:
                     ),
                     width="100%", justify="end", spacing="3",
                 ),
-                width="100%", max_width="34rem", padding="1.5rem", background="white",
+                width="100%", max_width="34rem", padding="1.5rem", background=SURFACE,
                 border_radius="0.75rem", box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
                 align="stretch", spacing="4",
             ),
@@ -684,9 +714,9 @@ def usuarios() -> rx.Component:
                 rx.button("Novo usuário", on_click=UserState.open_create_modal, disabled=UserState.profiles_loading | ~UserState.has_profiles),
                 width="100%", wrap="wrap", align="center", spacing="3",
             ),
-            rx.cond(UserState.success_message != "", rx.text(UserState.success_message, color="#15803d")),
-            rx.cond(UserState.error_message != "", rx.text(UserState.error_message, color="#b91c1c")),
-            rx.cond(UserState.profile_error != "", rx.text(UserState.profile_error, color="#b91c1c")),
+            rx.cond(UserState.success_message != "", rx.text(UserState.success_message, color=SUCCESS_TEXT)),
+            rx.cond(UserState.error_message != "", rx.text(UserState.error_message, color=ERROR_TEXT)),
+            rx.cond(UserState.profile_error != "", rx.text(UserState.profile_error, color=ERROR_TEXT)),
             section(
                 "Usuários cadastrados",
                 rx.cond(
@@ -698,6 +728,7 @@ def usuarios() -> rx.Component:
                         rx.cond(UserState.has_users, _users_table(), rx.text("Nenhum usuário encontrado.")),
                     ),
                 ),
+                tone="rose",
             ),
             rx.hstack(
                 rx.button("Anterior", on_click=UserState.previous_page, disabled=UserState.is_loading | (UserState.prev_page == None), variant="soft"),

@@ -5,6 +5,8 @@ from typing import Any
 
 import reflex as rx
 
+from .theme import BORDER_SOFT, SURFACE, TEXT_MUTED, TEXT_PRIMARY
+
 
 def normalize_search_text(value: object) -> str:
     """Normaliza para comparação parcial sem diferenciar caixa ou acentos."""
@@ -68,7 +70,7 @@ def searchable_select(
             on_blur=on_close.debounce(150),
             on_key_down=on_escape,
             placeholder=placeholder,
-            color=(rx.cond(query == "", placeholder_color, "#111827") if placeholder_color else None),
+            color=(rx.cond(query == "", placeholder_color, TEXT_PRIMARY) if placeholder_color else None),
             auto_complete=False,
             role="combobox",
             aria_expanded=is_open,
@@ -81,7 +83,7 @@ def searchable_select(
                 rx.cond(
                     options.length() > 0,
                     rx.foreach(options, option_button),
-                    rx.text(empty_message, color="#64748b", padding="0.5rem"),
+                    rx.text(empty_message, color=TEXT_MUTED, padding="0.5rem"),
                 ),
                 more_options,
                 width="100%",
@@ -90,8 +92,8 @@ def searchable_select(
                 align="stretch",
                 spacing="1",
                 padding="0.5rem",
-                background="white",
-                border="1px solid #e2e8f0",
+                background=SURFACE,
+                border=f"1px solid {BORDER_SOFT}",
                 border_radius="0.5rem",
                 box_shadow="0 8px 20px rgba(15, 23, 42, 0.12)",
                 position="absolute",

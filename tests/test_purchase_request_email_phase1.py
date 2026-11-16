@@ -42,7 +42,7 @@ def _state(*, contract_enabled: bool, email: str = "") -> ReplenishmentState:
         "requestable_page": 1,
         "requested_page": 1,
     }
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     for name, value in values.items():
         setattr(state, name, value)
     return state
@@ -237,7 +237,7 @@ class RecipientEmailUiTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_cancel_emails_fixed_recipient_only_once(self):
         def cancel_state():
             state = object.__new__(ReplenishmentState)
-            object.__setattr__(state, "dirty_vars", set())
+            state._init_bookkeeping()
             for name, value in {
                 "session_fingerprint_cache": "",
                 "cancel_submission_in_progress": False,

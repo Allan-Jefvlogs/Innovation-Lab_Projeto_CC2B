@@ -77,6 +77,29 @@ query "products" verb=POST {
                 quantidade_disponivel: 0
               }
             } as $initial_stock
+
+            db.get "user" {
+              field_name = "id"
+              field_value = $auth.id
+              output = ["id", "name"]
+            } as $audit_actor
+
+            precondition ($audit_actor != null) {
+              error_type = "accessdenied"
+              error = "AUDIT_ACTOR_NOT_FOUND"
+            }
+
+            db.add inventory_audit_log {
+              data = {
+                actor_user_id: $audit_actor.id,
+                actor_name: $audit_actor.name,
+                action_type: "criado",
+                entity_type: "produto",
+                entity_id: $product.id,
+                summary: "Produto cadastrado.",
+                changes: {after: {codigo: $product.codigo, nome: $product.nome, unidade_medida: $product.unidade_medida, estoque_minimo: $product.estoque_minimo}}
+              }
+            } as $audit_event
           }
         }
       }

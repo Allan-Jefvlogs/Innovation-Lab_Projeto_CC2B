@@ -19,7 +19,16 @@ query "purchase_requests/by_id/{request_id}" verb=GET {
     } as $request
 
     precondition ($request != null) {
-      error_type = "inputerror"
+      error_type = "notfound"
+      error = "PURCHASE_REQUEST_NOT_FOUND"
+    }
+
+    function.run "Inventory/purchase_request_notification_all_access" {
+      input = {user_id: $auth.id}
+    } as $scope
+
+    precondition ($scope.all_access || $request.solicitante_usuario_id == $auth.id) {
+      error_type = "notfound"
       error = "PURCHASE_REQUEST_NOT_FOUND"
     }
 
@@ -37,7 +46,10 @@ query "purchase_requests/by_id/{request_id}" verb=GET {
         "items.evento",
         "items.justificativa",
         "items.dados",
-        "items.data_evento"
+        "items.data_evento",
+        "itemsTotal",
+        "curPage",
+        "perPage"
       ]
       return = {type: "list", paging: {page: $input.history_page, per_page: $input.history_per_page, totals: true}}
     } as $history_page
@@ -49,6 +61,7 @@ query "purchase_requests/by_id/{request_id}" verb=GET {
       produto_id: $request.produto_id,
       quantidade_solicitada: $request.quantidade_solicitada,
       quantidade_recebida: $request.quantidade_recebida,
+      unidade_medida_solicitada: $request.unidade_medida_solicitada,
       urgencia: $request.urgencia,
       solicitante_usuario_id: $request.solicitante_usuario_id,
       status: $request.status,

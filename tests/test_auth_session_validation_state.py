@@ -22,7 +22,7 @@ from Meu_projeto.state.auth import AuthState, _retry_after_epoch
 
 def _auth_state(**overrides) -> AuthState:
     state = object.__new__(AuthState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     defaults = {
         "auth_token": "persisted-test-token",
         "user_id": 23,
@@ -240,7 +240,7 @@ class SessionValidationStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_protected_loader_does_not_call_xano_without_current_grant(self):
         auth_state = _auth_state(permission_codes=[], session_validation="valid")
         stock_state = object.__new__(StockState)
-        object.__setattr__(stock_state, "dirty_vars", set())
+        stock_state._init_bookkeeping()
         object.__setattr__(stock_state, "get_state", AsyncMock(return_value=auth_state))
 
         token = await StockState._session_token(stock_state)
@@ -257,7 +257,7 @@ class SessionValidationStateTests(unittest.IsolatedAsyncioTestCase):
         for state_class in (EntryState, ExitState, MovementHistoryState, ReportState):
             with self.subTest(state=state_class.__name__):
                 page_state = object.__new__(state_class)
-                object.__setattr__(page_state, "dirty_vars", set())
+                page_state._init_bookkeeping()
                 object.__setattr__(page_state, "get_state", AsyncMock(return_value=auth_state))
                 token = await state_class._session_token(page_state)
                 self.assertEqual(token, "")
@@ -269,7 +269,7 @@ class SessionValidationStateTests(unittest.IsolatedAsyncioTestCase):
             session_validation="temporarily_unavailable",
         )
         entry = object.__new__(EntryState)
-        object.__setattr__(entry, "dirty_vars", set())
+        entry._init_bookkeeping()
         for name, value in {
             "is_submitting": False,
             "error_message": "",
@@ -283,7 +283,7 @@ class SessionValidationStateTests(unittest.IsolatedAsyncioTestCase):
         object.__setattr__(entry, "get_state", AsyncMock(return_value=auth_state))
 
         exit_state = object.__new__(ExitState)
-        object.__setattr__(exit_state, "dirty_vars", set())
+        exit_state._init_bookkeeping()
         for name, value in {
             "is_submitting": False,
             "error_message": "",

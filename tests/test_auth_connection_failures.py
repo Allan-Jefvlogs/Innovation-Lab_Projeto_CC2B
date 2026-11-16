@@ -25,7 +25,7 @@ CONNECTION_MESSAGE = (
 def _auth_state() -> AuthState:
     """Create an isolated Reflex State shell without starting the app."""
     state = object.__new__(AuthState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     defaults = {
         "auth_token": "",
         "user_id": 0,

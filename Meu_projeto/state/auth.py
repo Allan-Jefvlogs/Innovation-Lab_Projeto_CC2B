@@ -21,7 +21,7 @@ ROUTE_PERMISSION = {
     "/categorias": "category.read",
     "/fornecedores": "supplier.read",
     "/estoque": "stock.read",
-    "/movimentacoes": "movement.read",
+    "/auditoria": "administrator",
     "/movimentacoes/entradas": "stock.entry",
     "/movimentacoes/saidas": "stock.exit",
     "/relatorios": "report.read",
@@ -39,6 +39,12 @@ def _required_route_permission(route_path: str) -> Optional[str]:
     if path.startswith("/produtos/"):
         return "product.read"
     return ROUTE_PERMISSION.get(path)
+
+
+def _is_purchase_request_detail_route(route_path: str) -> bool:
+    """Allow the detail route to reach Xano's own/global scope authorization."""
+    parts = (route_path.rstrip("/") or "/").strip("/").split("/")
+    return len(parts) == 2 and parts[0] == "compras" and parts[1].isdigit()
 
 
 def _retry_after_epoch(value: Optional[str], *, now: Optional[float] = None) -> float:
@@ -138,12 +144,17 @@ class AuthState(rx.State):
         pid = self.inventory_profile_id
         if self.inventory_profile_code == "administrator" or pid == 1 or self.user_role == "administrator":
             self.profile_name = "Líder"
+        elif self.inventory_profile_code == "compras":
+            self.profile_name = "Compras"
         elif pid == 2 or self.user_role == "stockkeeper":
             self.profile_name = "Almoxarife"
         elif pid == 3 or self.user_role == "read_only":
             self.profile_name = "Auxiliar de almoxarifado"
         else:
             self.profile_name = "Sem perfil atribuído"
+
+    def _home_route(self) -> str:
+        return "/compras" if self.inventory_profile_code == "compras" else "/dashboard"
 
     def has_permission(self, permission_code: str) -> bool:
         """Usa os grants efetivos retornados pelo Xano para esta sessão."""
@@ -198,6 +209,14 @@ class AuthState(rx.State):
     @rx.var
     def can_read_reports(self) -> bool:
         return self.has_permission("report.read")
+
+    @rx.var
+    def can_read_purchase_requests(self) -> bool:
+        return self.has_permission("purchase_request.read")
+
+    @rx.var
+    def can_manage_purchase_requests(self) -> bool:
+        return self.has_permission("purchase_request.read") and self.has_permission("purchase_request.manage")
 
     async def restore_session(self, *, force: bool = False) -> bool:
         """Validate a persisted token without reusing stale identity or grants."""
@@ -308,7 +327,7 @@ class AuthState(rx.State):
             self.session_retry_after_epoch = 0.0
             self.error_message = ""
             self.is_loading = False
-            return rx.redirect("/alterar-senha" if self.must_change_password else "/dashboard")
+            return rx.redirect("/alterar-senha" if self.must_change_password else self._home_route())
 
         except XanoAuthError as exc:
             clear_session_read_cache(str(self.auth_token or "").strip())
@@ -367,13 +386,26 @@ class AuthState(rx.State):
             return rx.redirect("/alterar-senha")
         if current_path == "/alterar-senha":
             if not self.must_change_password:
-                return rx.redirect("/dashboard")
+                return rx.redirect(self._home_route())
             return
+        purchase_detail = _is_purchase_request_detail_route(current_path)
+        if self.inventory_profile_code == "compras":
+            if current_path != "/compras" and not purchase_detail and current_path != "/conta/alterar-senha":
+                return rx.redirect("/compras")
+            if current_path == "/compras" and not self.has_permission("purchase_request.read"):
+                return
+            if purchase_detail and not self.has_permission("purchase_request.read"):
+                return
+        elif current_path == "/compras" or purchase_detail:
+            if not self.has_permission("purchase_request.read"):
+                return rx.redirect(self._home_route())
+        elif current_path.startswith("/compras/"):
+            return rx.redirect(self._home_route())
         if current_path in {"/usuarios", "/perfis"} and not self.is_administrator:
-            return rx.redirect("/dashboard")
+            return rx.redirect(self._home_route())
         required_permission = _required_route_permission(current_path)
         if required_permission and not self.has_permission(required_permission):
-            return rx.redirect("/dashboard")
+            return rx.redirect(self._home_route())
 
     async def retry_session_validation(self):
         """Retry only on an explicit user action and honor the server's Retry-After."""
@@ -388,7 +420,7 @@ class AuthState(rx.State):
 
         valid = await self.restore_session(force=True)
         if valid:
-            return rx.redirect("/alterar-senha" if self.must_change_password else "/dashboard")
+            return rx.redirect("/alterar-senha" if self.must_change_password else self._home_route())
         if self.session_validation == "invalid" and str(self.router.url.path) != "/":
             return rx.redirect("/")
 
@@ -400,4 +432,4 @@ class AuthState(rx.State):
         if self.session_validation in {"temporarily_unavailable", "forbidden", "validating"}:
             return
         if await self.restore_session():
-            return rx.redirect("/alterar-senha" if self.must_change_password else "/dashboard")
+            return rx.redirect("/alterar-senha" if self.must_change_password else self._home_route())

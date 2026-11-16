@@ -146,7 +146,7 @@ def _auth_state() -> SimpleNamespace:
 
 def _exit_state(auth_state: SimpleNamespace, *, saldo: str = "12", minimo: str = "10") -> ExitState:
     state = object.__new__(ExitState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     for name, value in {
         "is_submitting": False,
         "error_message": "",

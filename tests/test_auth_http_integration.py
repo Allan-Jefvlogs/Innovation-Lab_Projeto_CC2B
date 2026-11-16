@@ -31,7 +31,7 @@ MOCK_TOKEN = "integration-test-token-not-real"
 def _state() -> AuthState:
     """Build an isolated Reflex state without app or browser initialization."""
     state = object.__new__(AuthState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     for name, value in {
         "auth_token": MOCK_TOKEN,
         "user_id": 7,
@@ -191,7 +191,7 @@ class XanoAuthClientTransportIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(state.has_permission("stock.exit"))
 
             stock_state = object.__new__(StockState)
-            object.__setattr__(stock_state, "dirty_vars", set())
+            stock_state._init_bookkeeping()
             object.__setattr__(stock_state, "get_state", AsyncMock(return_value=state))
             self.assertEqual(await StockState._session_token(stock_state), "")
             self.assertEqual(len(observed), 1)

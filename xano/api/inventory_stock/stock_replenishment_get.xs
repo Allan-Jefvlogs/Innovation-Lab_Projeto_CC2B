@@ -18,6 +18,10 @@ query "stock/replenishment" verb=GET {
       input = {user_id: $auth.id, permission_code: "purchase_request.read"}
     } as $request_authorization
 
+    function.run "Inventory/purchase_request_notification_all_access" {
+      input = {user_id: $auth.id}
+    } as $scope
+
     db.query product {
       join = {
         inventory_stock: {
@@ -91,6 +95,7 @@ query "stock/replenishment" verb=GET {
         nome: $db.product.nome,
         unidade_medida: $db.product.unidade_medida,
         estoque_minimo: $db.product.estoque_minimo,
+        solicitante_usuario_id: $db.active_request.solicitante_usuario_id,
         solicitacao_id: $db.active_request.id,
         quantidade_solicitada: $db.active_request.quantidade_solicitada,
         urgencia_solicitacao: $db.active_request.urgencia,
@@ -104,6 +109,7 @@ query "stock/replenishment" verb=GET {
         "items.unidade_medida",
         "items.quantidade_disponivel",
         "items.estoque_minimo",
+        "items.solicitante_usuario_id",
         "items.solicitacao_id",
         "items.quantidade_solicitada",
         "items.urgencia_solicitacao",
@@ -159,6 +165,32 @@ query "stock/replenishment" verb=GET {
 
     foreach ($requested_page.items) {
       each as $item {
+        var $can_view_request_details {
+          value = $scope.all_access || $item.solicitante_usuario_id == $auth.id
+        }
+        var $request_details {
+          value = {
+            solicitacao_id: null,
+            quantidade_solicitada: null,
+            urgencia: null,
+            solicitacao_status: null,
+            data_criacao_solicitacao: null
+          }
+        }
+        conditional {
+          if ($can_view_request_details) {
+            var.update $request_details {
+              value = {
+                solicitacao_id: $item.solicitacao_id,
+                quantidade_solicitada: $item.quantidade_solicitada,
+                urgencia: $item.urgencia_solicitacao,
+                solicitacao_status: $item.solicitacao_status,
+                data_criacao_solicitacao: $item.data_criacao_solicitacao
+              }
+            }
+          }
+        }
+
         var $situacao_estoque {
           value = ""
         }
@@ -185,11 +217,12 @@ query "stock/replenishment" verb=GET {
             quantidade_disponivel: $item.quantidade_disponivel,
             estoque_minimo: $item.estoque_minimo,
             situacao_estoque: $situacao_estoque,
-            solicitacao_id: $item.solicitacao_id,
-            quantidade_solicitada: $item.quantidade_solicitada,
-            urgencia: $item.urgencia_solicitacao,
-            solicitacao_status: $item.solicitacao_status,
-            data_criacao_solicitacao: $item.data_criacao_solicitacao
+            solicitacao_detalhes_disponiveis: $can_view_request_details,
+            solicitacao_id: $request_details.solicitacao_id,
+            quantidade_solicitada: $request_details.quantidade_solicitada,
+            urgencia: $request_details.urgencia,
+            solicitacao_status: $request_details.solicitacao_status,
+            data_criacao_solicitacao: $request_details.data_criacao_solicitacao
           }
         }
       }

@@ -1,6 +1,10 @@
 import reflex as rx
+
+from ..components.theme import BORDER, BORDER_SOFT, ERROR_TEXT, MINT_SOFT, PEACH_ROSE, ROSE_TEXT, SUCCESS_TEXT, SURFACE_ALT, TABLE_HEADER, TEXT_MUTED, WARNING_TEXT
 import math
 import logging
+from uuid import uuid4
+from typing import Any
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -17,6 +21,8 @@ from ..services.xano_client import (
     auth_client,
 )
 from ..state import AuthState
+from ..services.purchase_receipts import PURCHASE_RECEIPTS_ENABLED, receipt_preview
+from ..services.session_read_cache import session_read_cache
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +74,155 @@ class EntryState(rx.State):
     is_submitting: bool = False
     error_message: str = ""
     success_message: str = ""
+    receipts_enabled: bool = PURCHASE_RECEIPTS_ENABLED
+    receipt_orders: list[dict[str, str]] = []
+    receipt_order_id: str = "none"
+    receipt_info: str = ""
+    receipt_error: str = ""
+    receipt_loading: bool = False
+    receipt_page: int = 0
+    receipt_has_more: bool = False
+    receipt_needs_recovery: bool = False
+    receipt_requires_reconciliation: bool = False
+    _receipt_orders_raw: list[dict[str, Any]] = []
+    _receipt_key: str = ""
+    _receipt_payload: dict[str, Any] = {}
+    _receipt_owner: str = ""
+
+    async def load_receipt_orders(self, more: bool = False):
+        if not self.receipts_enabled or self.receipt_loading or self.is_submitting or not self.product_id:
+            return
+        auth = await self.get_state(AuthState)
+        if not auth.session_is_valid or not auth.has_permission("stock.entry") or not auth.has_permission("purchase_request.read"):
+            self.receipt_error = "Consulta de compras exige permissão de leitura. A entrada avulsa continua disponível."
+            return
+        if self.receipt_needs_recovery:
+            self.receipt_error = "Recupere a tentativa anterior antes de iniciar outro recebimento."
+            return
+        token = str(auth.auth_token or "").strip()
+        product_id = int(self.product_id)
+        page_number = self.receipt_page + 1 if more else 1
+        self.receipt_loading = True
+        self.receipt_error = ""
+        if not more:
+            self.receipt_orders = []
+            self._receipt_orders_raw = []
+            self.receipt_order_id = "none"
+            self.receipt_info = ""
+        yield
+        try:
+            params = {"produto_id": product_id, "page": page_number, "per_page": 20}
+            scope = "receipt:global" if auth.has_permission("purchase_request.manage") else "receipt:own"
+            key = session_read_cache.key(scope, "GET /purchase_requests", token, params)
+            data, fresh = session_read_cache.get(key, 20.0)
+            if not fresh:
+                data = await auth_client.list_purchase_requests(token, **params)
+                session_read_cache.set(key, data, 20.0)
+            # A different product may have been selected while awaiting the GET.
+            if self.product_id != str(product_id):
+                return
+            latest = await self.get_state(AuthState)
+            latest_scope = "receipt:global" if latest.has_permission("purchase_request.manage") else "receipt:own"
+            if (not latest.session_is_valid or not latest.has_permission("stock.entry")
+                    or not latest.has_permission("purchase_request.read") or latest_scope != scope
+                    or str(latest.auth_token or "").strip() != token):
+                self.receipt_orders = []
+                self._receipt_orders_raw = []
+                self.receipt_order_id = "none"
+                self.receipt_info = ""
+                return
+            for order in data["items"]:
+                if order.get("produto_id") == product_id and order.get("status") in {"aguardando_recebimento", "recebimento_parcial"}:
+                    if not any(row["id"] == str(order["id"]) for row in self.receipt_orders):
+                        self._receipt_orders_raw.append(order)
+                        unit = order.get("unidade_medida_solicitada") or "unidade não confirmada"
+                        self.receipt_orders.append({"id": str(order["id"]), "label": f"Pedido #{order['id']} · {order['status']} · {unit}"})
+            self.receipt_page = page_number
+            self.receipt_has_more = page_number * 20 < data["itemsTotal"]
+            if not self.receipt_orders:
+                self.receipt_info = "Nenhum pedido elegível nesta página. A entrada avulsa continua disponível."
+        except XanoAuthError:
+            yield auth.logout()
+        except XanoError:
+            self.receipt_error = "Não foi possível consultar os pedidos. Nenhum recebimento foi selecionado automaticamente."
+        finally:
+            self.receipt_loading = False
+
+    def select_receipt_order(self, value: str):
+        if self.is_submitting or self.receipt_needs_recovery:
+            return
+        self.receipt_order_id = "none"
+        self.receipt_error = ""
+        self.receipt_info = ""
+        if value == "none":
+            return
+        order = next((row for row in self._receipt_orders_raw if str(row["id"]) == value), None)
+        if order is None:
+            return
+        try:
+            # A small positive preview validates eligibility without choosing quantity.
+            remaining = Decimal(str(order["quantidade_solicitada"])) - Decimal(str(order["quantidade_recebida"]))
+            preview = receipt_preview(order, int(self.product_id), remaining)
+        except (ValueError, InvalidOperation, KeyError, TypeError):
+            self.receipt_error = "Pedido sem unidade/quantidades confirmadas. Utilize entrada avulsa ou solicite conferência autorizada."
+            return
+        self.receipt_order_id = value
+        self.receipt_info = f"Solicitada: {preview['solicitada']} · Recebida: {preview['recebida']} · Restante: {preview['restante']} {preview['unidade']}"
+
+    def _confirm_entry(self, result: dict[str, Any], token: str):
+        self.success_message = "Entrada registrada com sucesso."
+        if result.get("saldo_atual") is not None:
+            self.success_message += f" Saldo atualizado: {result['saldo_atual']}."
+        if result.get("recebimento"):
+            self.success_message += f" Pedido: {result['recebimento']['status']}."
+        self._receipt_key = ""
+        self._receipt_payload = {}
+        self._receipt_owner = ""
+        self.receipt_needs_recovery = False
+        self.receipt_requires_reconciliation = False
+        self._clear_entry_fields()
+        self.product_error = self.supplier_error = ""
+        for endpoint in ("GET /stock", "GET /stock/replenishment", "GET /purchase_requests", "GET /purchase_requests/by_id", "GET /purchase_requests/summary", "GET /purchase_requests/notifications"):
+            session_read_cache.invalidate(endpoint=endpoint, token=token)
+
+    async def recover_receipt(self):
+        if not self.receipts_enabled or not self.receipt_needs_recovery or self.is_submitting or not self._receipt_payload:
+            return
+        if self.receipt_requires_reconciliation:
+            self.error_message = "Contrato de recebimento não confirmado. Confira movimento e pedido por leitura antes de qualquer novo envio."
+            return
+        auth = await self.get_state(AuthState)
+        if not auth.session_is_valid or not auth.has_permission("purchase_request.read"):
+            self.error_message = "A recuperação exige sessão válida e permissão de leitura da compra."
+            return
+        token = await self._session_token()
+        if not token or session_read_cache.session_fingerprint(token) != self._receipt_owner:
+            self.error_message = "A recuperação exige a mesma sessão autenticada. Solicite reconciliação antes de registrar outra entrada."
+            return
+        self.is_submitting = True
+        self.error_message = ""
+        yield
+        try:
+            result = await auth_client.create_stock_entry(token, **self._receipt_payload)
+            self._confirm_entry(result, token)
+        except XanoAuthError:
+            yield rx.redirect("/")
+        except XanoRequestError as exc:
+            if exc.status_code == 400 and exc.error_code in {
+                "RECEIPT_UNIT_UNCONFIRMED", "RECEIPT_UNIT_MISMATCH", "RECEIPT_EXCEEDS_REMAINING",
+                "RECEIPT_STATUS_INVALID", "RECEIPT_PRODUCT_MISMATCH", "RECEIPT_BALANCE_INVALID",
+                "RECEIPT_INPUT_INVALID", "RECEIPT_LINK_REQUIRED", "RECEIPT_IDEMPOTENCY_CONFLICT",
+            }:
+                self.receipt_requires_reconciliation = True
+                self.error_message = self._entry_error_message(exc.error_code) + " Confira a tentativa anterior por leitura antes de qualquer novo envio."
+            else:
+                self.error_message = "Recebimento ainda não confirmado. A chave original foi preservada; não registre uma nova entrada para substituir esta tentativa."
+        except XanoError as exc:
+            if isinstance(exc, XanoServerError) and exc.status_code == 200:
+                self.receipt_requires_reconciliation = True
+            self.error_message = "Recebimento ainda não confirmado. A chave original foi preservada; não registre uma nova entrada para substituir esta tentativa."
+        finally:
+            self.is_submitting = False
 
     @rx.var
     def filtered_products(self) -> list[dict[str, str]]:
@@ -162,6 +317,12 @@ class EntryState(rx.State):
             self.is_loading = False
 
     def search_products(self, value: str):
+        self.receipt_order_id = "none"
+        self.receipt_orders = []
+        self._receipt_orders_raw = []
+        self.receipt_info = ""
+        self.receipt_page = 0
+        self.receipt_has_more = False
         self.product_query = value
         self.barcode_value = ""
         self.product_id = ""
@@ -210,6 +371,12 @@ class EntryState(rx.State):
         self.barcode_value = value
         self.product_error = ""
         if normalize_search_text(value.strip()) != normalize_search_text(self.product_code):
+            self.receipt_order_id = "none"
+            self.receipt_orders = []
+            self._receipt_orders_raw = []
+            self.receipt_info = ""
+            self.receipt_page = 0
+            self.receipt_has_more = False
             self.product_id = ""
             self.product_code = ""
             self.product_name = ""
@@ -221,6 +388,12 @@ class EntryState(rx.State):
             self.supplier_options_open = False
 
     async def _apply_selected_product(self, product: dict[str, str], token: str):
+        self.receipt_order_id = "none"
+        self.receipt_orders = []
+        self._receipt_orders_raw = []
+        self.receipt_info = ""
+        self.receipt_page = 0
+        self.receipt_has_more = False
         self.product_id = product["id"]
         self.product_code = product["codigo"]
         self.product_name = product["nome"]
@@ -397,6 +570,12 @@ class EntryState(rx.State):
         self.observacao = value
 
     def _clear_entry_fields(self):
+        self.receipt_order_id = "none"
+        self.receipt_orders = []
+        self._receipt_orders_raw = []
+        self.receipt_info = self.receipt_error = ""
+        self.receipt_page = 0
+        self.receipt_has_more = False
         self.product_query = ""
         self.product_id = ""
         self.product_code = ""
@@ -424,6 +603,13 @@ class EntryState(rx.State):
             "PERMISSION_DENIED": "Você não possui permissão para registrar entradas de estoque.",
             "STOCK_UPDATE_FAILED": "Não foi possível atualizar o estoque. Tente novamente.",
             "STOCK_CONCURRENCY_CONFLICT": "Houve um conflito ao atualizar o estoque. Tente novamente.",
+            "RECEIPT_UNIT_UNCONFIRMED": "Unidade histórica não confirmada. Utilize entrada avulsa ou solicite conferência autorizada.",
+            "RECEIPT_UNIT_MISMATCH": "A unidade do produto difere da unidade preservada no pedido.",
+            "RECEIPT_EXCEEDS_REMAINING": "A quantidade excede o restante do pedido.",
+            "RECEIPT_STATUS_INVALID": "O pedido não aceita recebimento no status atual.",
+            "RECEIPT_PRODUCT_MISMATCH": "O pedido não corresponde ao produto selecionado ou não está ativo.",
+            "RECEIPT_BALANCE_INVALID": "O pedido possui quantidades inconsistentes. Solicite conferência.",
+            "RECEIPT_IDEMPOTENCY_CONFLICT": "A chave já está associada a outra tentativa. Solicite reconciliação; não crie outra entrada.",
         }
         return messages.get(
             error_code,
@@ -432,6 +618,9 @@ class EntryState(rx.State):
 
     async def register_entry(self):
         if self.is_submitting:
+            return
+        if self.receipt_needs_recovery:
+            self.error_message = "Recupere a tentativa anterior com a mesma chave antes de registrar outra entrada."
             return
 
         self.error_message = ""
@@ -486,25 +675,29 @@ class EntryState(rx.State):
             self.error_message = "Vocé não possui permissão para registrar entradas."
             return
 
+        entry_payload = dict(product_id=product_id, quantidade=quantity, motivo=reason,
+                             supplier_id=supplier_id, data_hora=self.entry_date_time.strip() or None,
+                             observacao=self.observacao.strip() or None)
+        if self.receipt_order_id != "none":
+            if not self.receipts_enabled or not auth_state.has_permission("purchase_request.read"):
+                self.error_message = "Recebimento vinculado indisponível ou sem permissão de leitura."
+                return
+            order = next((row for row in self._receipt_orders_raw if str(row["id"]) == self.receipt_order_id), None)
+            try:
+                preview = receipt_preview(order or {}, product_id, quantity_decimal)
+            except ValueError as exc:
+                self.error_message = str(exc)
+                return
+            self._receipt_key = str(uuid4())
+            entry_payload.update(purchase_request_id=int(self.receipt_order_id),
+                                 chave_recebimento=self._receipt_key, unidade_medida=preview["unidade"])
+            self._receipt_payload = dict(entry_payload)
+            self._receipt_owner = session_read_cache.session_fingerprint(token)
         self.is_submitting = True
         yield
         try:
-            result = await auth_client.create_stock_entry(
-                token,
-                product_id=product_id,
-                quantidade=quantity,
-                motivo=reason,
-                supplier_id=supplier_id,
-                data_hora=self.entry_date_time.strip() or None,
-                observacao=self.observacao.strip() or None,
-            )
-            saldo_atual = result.get("saldo_atual")
-            self.success_message = "Entrada registrada com sucesso."
-            if saldo_atual is not None:
-                self.success_message += f" Saldo atualizado: {saldo_atual}."
-            self._clear_entry_fields()
-            self.product_error = ""
-            self.supplier_error = ""
+            result = await auth_client.create_stock_entry(token, **entry_payload)
+            self._confirm_entry(result, token)
         except XanoAuthError as exc:
             self.error_message = exc.message
             yield rx.redirect("/")
@@ -512,13 +705,32 @@ class EntryState(rx.State):
             self.error_message = "Você não possui permissão para registrar entradas de estoque."
         except XanoRequestError as exc:
             self.error_message = self._entry_error_message(exc.error_code)
+            # These explicit domain validations occur before any write in /entries.
+            # Do not discard the key for timeout, unknown 5xx, 429 or key collision.
+            if exc.status_code == 400 and exc.error_code in {
+                "RECEIPT_UNIT_UNCONFIRMED", "RECEIPT_UNIT_MISMATCH", "RECEIPT_EXCEEDS_REMAINING",
+                "RECEIPT_STATUS_INVALID", "RECEIPT_PRODUCT_MISMATCH", "RECEIPT_BALANCE_INVALID",
+                "RECEIPT_INPUT_INVALID", "RECEIPT_LINK_REQUIRED",
+            }:
+                self._receipt_key = ""
+                self._receipt_payload = {}
+                self._receipt_owner = ""
         except XanoConnectionError:
             self.error_message = "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
-        except (XanoServerError, XanoError):
+        except (XanoServerError, XanoError) as exc:
+            if self._receipt_key and isinstance(exc, XanoServerError) and exc.status_code == 200:
+                self.receipt_requires_reconciliation = True
             self.error_message = "Não foi possível registrar a entrada. Verifique os dados e tente novamente."
         except Exception:
             self.error_message = "Não foi possível registrar a entrada. Tente novamente."
         finally:
+            if self._receipt_key:
+                self.receipt_needs_recovery = True
+                self.error_message += (
+                    " Preserve esta tentativa; é necessária conferência por leitura antes de reenviar."
+                    if self.receipt_requires_reconciliation else
+                    " Preserve esta tentativa; use Recuperar recebimento, sem registrar outra entrada."
+                )
             self.is_submitting = False
 
 
@@ -1305,8 +1517,14 @@ def _movement_row(movement: dict[str, str]) -> rx.Component:
         rx.text(movement["data_hora_display"], white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
         rx.cond(
             movement["tipo"] == "entrada",
-            rx.center(rx.badge("Entrada", color_scheme="green"), padding_x=MOVEMENT_GRID_CELL_PADDING_X),
-            rx.center(rx.badge("Saída", color_scheme="red"), padding_x=MOVEMENT_GRID_CELL_PADDING_X),
+            rx.center(
+                rx.badge("Entrada", color=SUCCESS_TEXT, background=MINT_SOFT),
+                padding_x=MOVEMENT_GRID_CELL_PADDING_X,
+            ),
+            rx.center(
+                rx.badge("Saída", color=ROSE_TEXT, background=PEACH_ROSE),
+                padding_x=MOVEMENT_GRID_CELL_PADDING_X,
+            ),
         ),
         rx.text(movement["product_code_display"], padding_x=MOVEMENT_GRID_CELL_PADDING_X),
         rx.text(movement["product_name_display"], overflow="hidden", text_overflow="ellipsis", white_space="nowrap", padding_x=MOVEMENT_GRID_CELL_PADDING_X),
@@ -1342,7 +1560,7 @@ def _movement_row(movement: dict[str, str]) -> rx.Component:
         padding_y="0.75rem",
         ),
         width="100%",
-        border_bottom="1px solid #eee",
+        border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -1378,15 +1596,15 @@ def _movement_table() -> rx.Component:
         column_gap=MOVEMENT_GRID_COLUMN_GAP,
         style={"grid_template_columns": MOVEMENT_GRID_COLUMNS, "align_items": "center"},
         padding_y="0.75rem",
-        background="#f5f5f5",
-        border_bottom="1px solid #ddd",
+        background=TABLE_HEADER,
+        border_bottom=f"1px solid {BORDER}",
     )
     return rx.box(
         header,
         rx.vstack(rx.foreach(MovementHistoryState.movements, _movement_row), width="100%", spacing="0"),
         width="100%",
         overflow_x="auto",
-        border="1px solid #ddd",
+        border=f"1px solid {BORDER}",
         border_radius="0.4rem",
     )
 
@@ -1462,11 +1680,11 @@ def historico() -> rx.Component:
             ),
             rx.cond(
                 MovementHistoryState.product_filter_error != "",
-                rx.text(MovementHistoryState.product_filter_error, color="#b45309"),
+                rx.text(MovementHistoryState.product_filter_error, color=WARNING_TEXT),
             ),
             rx.cond(
                 MovementHistoryState.user_filter_error != "",
-                rx.text(MovementHistoryState.user_filter_error, color="#b45309"),
+                rx.text(MovementHistoryState.user_filter_error, color=WARNING_TEXT),
             ),
             section(
                 "Movimentações",
@@ -1475,14 +1693,15 @@ def historico() -> rx.Component:
                     rx.center(rx.spinner(), rx.text("Carregando histórico..."), width="100%", padding="2rem"),
                     rx.cond(
                         MovementHistoryState.error_message != "",
-                        rx.text(MovementHistoryState.error_message, color="#b91c1c"),
+                        rx.text(MovementHistoryState.error_message, color=ERROR_TEXT),
                         rx.cond(
                             MovementHistoryState.movements.length() > 0,
                             _movement_table(),
-                            rx.text("Nenhuma movimentação encontrada.", color="#64748b", padding="1rem"),
+                            rx.text("Nenhuma movimentação encontrada.", color=TEXT_MUTED, padding="1rem"),
                         ),
                     ),
                 ),
+                tone="mint",
             ),
             rx.hstack(
                 rx.button(
@@ -1522,8 +1741,8 @@ def entrada() -> rx.Component:
         "Registrar entrada de estoque",
         rx.vstack(
             rx.cond(EntryState.is_loading, rx.center(rx.spinner(), "Carregando dados...")),
-            rx.cond(EntryState.error_message != "", rx.text(EntryState.error_message, color="#b91c1c")),
-            rx.cond(EntryState.success_message != "", rx.text(EntryState.success_message, color="#15803d")),
+            rx.cond(EntryState.error_message != "", rx.text(EntryState.error_message, color=ERROR_TEXT)),
+            rx.cond(EntryState.success_message != "", rx.text(EntryState.success_message, color=SUCCESS_TEXT)),
             section(
                 "Dados da entrada",
                 rx.vstack(
@@ -1535,7 +1754,7 @@ def entrada() -> rx.Component:
                         placeholder="Leia ou digite o código e pressione Enter",
                         auto_complete=False,
                     ),
-                    rx.cond(EntryState.product_error != "", rx.text(EntryState.product_error, color="#b91c1c")),
+                    rx.cond(EntryState.product_error != "", rx.text(EntryState.product_error, color=ERROR_TEXT)),
                     rx.vstack(
                         rx.text("Produto"),
                         searchable_select(
@@ -1562,6 +1781,33 @@ def entrada() -> rx.Component:
                         value=EntryState.quantidade,
                         on_change=EntryState.change_quantity,
                     ),
+                    rx.cond(EntryState.receipts_enabled, rx.vstack(
+                        rx.text("Solicitação de compra (opcional)", weight="medium"),
+                        rx.text("Escolha explicitamente um pedido ou mantenha Entrada avulsa.", color=TEXT_MUTED, size="2"),
+                        rx.button("Consultar pedidos do produto", on_click=EntryState.load_receipt_orders(False),
+                                  variant="soft", disabled=EntryState.receipt_loading | EntryState.is_submitting | EntryState.receipt_needs_recovery | (EntryState.product_id == "")),
+                        rx.select.root(
+                            rx.select.trigger(placeholder="Entrada avulsa", width="100%"),
+                            rx.select.content(
+                                rx.select.item("Entrada avulsa", value="none"),
+                                rx.foreach(EntryState.receipt_orders, lambda order: rx.select.item(order["label"], value=order["id"])),
+                            ),
+                            value=EntryState.receipt_order_id, on_change=EntryState.select_receipt_order,
+                            disabled=EntryState.is_submitting | EntryState.receipt_loading | EntryState.receipt_needs_recovery,
+                        ),
+                        rx.cond(EntryState.receipt_loading, rx.hstack(rx.spinner(), "Consultando pedidos...")),
+                        rx.cond(EntryState.receipt_info != "", rx.text(EntryState.receipt_info, size="2", color=TEXT_MUTED)),
+                        rx.cond(EntryState.receipt_error != "", rx.text(EntryState.receipt_error, role="alert", color=ERROR_TEXT)),
+                        rx.cond(EntryState.receipt_has_more, rx.button("Mais pedidos", on_click=EntryState.load_receipt_orders(True), variant="soft", disabled=EntryState.receipt_loading | EntryState.is_submitting)),
+                        rx.cond(EntryState.receipt_needs_recovery, rx.vstack(
+                            rx.text("Resultado não confirmado. Não registre outra entrada para substituir esta tentativa.", role="alert", color=WARNING_TEXT),
+                            rx.cond(EntryState.receipt_requires_reconciliation,
+                                    rx.text("Resposta incompatível: confira movimento e pedido por leitura antes de reenviar.", role="alert", color=ERROR_TEXT)),
+                            rx.button("Recuperar recebimento", on_click=EntryState.recover_receipt, variant="soft", disabled=EntryState.is_submitting | EntryState.receipt_requires_reconciliation),
+                            align="stretch", width="100%",
+                        )),
+                        align="stretch", gap="8px", width="100%",
+                    )),
                     rx.vstack(
                         rx.text("Fornecedor"),
                         searchable_select(
@@ -1580,7 +1826,7 @@ def entrada() -> rx.Component:
                         ),
                         width="100%", align="stretch", spacing="1",
                     ),
-                    rx.cond(EntryState.supplier_error != "", rx.text(EntryState.supplier_error, color="#b45309")),
+                    rx.cond(EntryState.supplier_error != "", rx.text(EntryState.supplier_error, color=WARNING_TEXT)),
                     rx.vstack(
                         rx.text("Data e hora (opcional)"),
                         rx.input(
@@ -1590,7 +1836,7 @@ def entrada() -> rx.Component:
                         ),
                         rx.text(
                             "Se nenhuma data for informada, será utilizada automaticamente a data e hora do registro da entrada.",
-                            color="#64748b",
+                            color=TEXT_MUTED,
                             font_size="0.875rem",
                         ),
                         width="100%", align="stretch", spacing="1",
@@ -1610,7 +1856,7 @@ def entrada() -> rx.Component:
                         rx.button(
                             rx.cond(EntryState.is_submitting, "Registrando...", "Registrar entrada"),
                             on_click=EntryState.register_entry,
-                            disabled=EntryState.is_submitting | EntryState.is_loading,
+                            disabled=EntryState.is_submitting | EntryState.is_loading | EntryState.receipt_needs_recovery,
                         ),
                         spacing="3",
                     ),
@@ -1618,6 +1864,7 @@ def entrada() -> rx.Component:
                     align="stretch",
                     spacing="3",
                 ),
+                tone="mint",
             ),
         ),
     )
@@ -1627,10 +1874,10 @@ def saida() -> rx.Component:
         "Registrar saída de estoque",
         rx.vstack(
             rx.cond(ExitState.is_loading, rx.center(rx.spinner(), "Carregando dados...")),
-            rx.cond(ExitState.error_message != "", rx.text(ExitState.error_message, color="#b91c1c")),
-            rx.cond(ExitState.success_message != "", rx.text(ExitState.success_message, color="#15803d")),
-            rx.cond(ExitState.alert_message != "", rx.text(ExitState.alert_message, color="#15803d")),
-            rx.cond(ExitState.alert_error != "", rx.text(ExitState.alert_error, color="#b45309")),
+            rx.cond(ExitState.error_message != "", rx.text(ExitState.error_message, color=ERROR_TEXT)),
+            rx.cond(ExitState.success_message != "", rx.text(ExitState.success_message, color=SUCCESS_TEXT)),
+            rx.cond(ExitState.alert_message != "", rx.text(ExitState.alert_message, color=SUCCESS_TEXT)),
+            rx.cond(ExitState.alert_error != "", rx.text(ExitState.alert_error, color=WARNING_TEXT)),
             section(
                 "Dados da saída",
                 rx.vstack(
@@ -1642,7 +1889,7 @@ def saida() -> rx.Component:
                         placeholder="Leia ou digite o código e pressione Enter",
                         auto_complete=False,
                     ),
-                    rx.cond(ExitState.product_error != "", rx.text(ExitState.product_error, color="#b91c1c")),
+                    rx.cond(ExitState.product_error != "", rx.text(ExitState.product_error, color=ERROR_TEXT)),
                     rx.vstack(
                         rx.text("Produto"),
                         searchable_select(
@@ -1666,13 +1913,13 @@ def saida() -> rx.Component:
                         rx.cond(
                             ExitState.stock_balance_found,
                             rx.text(f"Saldo disponível: {ExitState.saldo_disponivel}"),
-                            rx.text("Não foi encontrado saldo de estoque para este produto.", color="#b45309"),
+                            rx.text("Não foi encontrado saldo de estoque para este produto.", color=WARNING_TEXT),
                         ),
                         rx.fragment(),
                     ),
                     rx.cond(
                         (ExitState.product_id != "") & ExitState.stock_balance_found & ~ExitState.has_available_stock,
-                        rx.text("Este produto não possui estoque disponível.", color="#b45309"),
+                        rx.text("Este produto não possui estoque disponível.", color=WARNING_TEXT),
                         rx.fragment(),
                     ),
                     rx.input(
@@ -1692,7 +1939,7 @@ def saida() -> rx.Component:
                         ),
                         rx.text(
                             "Se nenhuma data for informada, o Xano utilizará a data e hora do registro da saída.",
-                            color="#64748b",
+                            color=TEXT_MUTED,
                             font_size="0.875rem",
                         ),
                         width="100%", align="stretch", spacing="1",
@@ -1720,6 +1967,7 @@ def saida() -> rx.Component:
                     align="stretch",
                     spacing="3",
                 ),
+                tone="rose",
             ),
         ),
     )

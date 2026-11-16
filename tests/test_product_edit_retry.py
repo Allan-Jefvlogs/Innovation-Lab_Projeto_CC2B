@@ -33,7 +33,7 @@ def _product() -> dict[str, object]:
 
 def _state(*, loaded: bool = False) -> ProductsState:
     state = object.__new__(ProductsState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     values = {
         "is_loading": False,
         "is_saving": False,

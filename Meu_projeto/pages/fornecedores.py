@@ -1,4 +1,6 @@
 import reflex as rx
+
+from ..components.theme import BORDER, BORDER_SOFT, ERROR_TEXT, SUCCESS_TEXT, SURFACE, SURFACE_ALT, TABLE_HEADER
 from typing import Any
 
 from ..components.layout import page, section
@@ -365,7 +367,6 @@ class SupplierState(rx.State):
                     tipo_documento=tipo_documento,
                     documento=documento,
                     contato=contato,
-                    endereco=self.endereco,
                 )
                 success = "Fornecedor atualizado com sucesso."
             else:
@@ -460,7 +461,7 @@ def _supplier_row(item: dict[str, str]) -> rx.Component:
         style={"grid_template_columns": SUPPLIER_GRID_COLUMNS, "align_items": "center"},
         padding_y="0.75rem",
         padding_x="8px",
-        border_bottom="1px solid #e5e7eb",
+        border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -477,15 +478,15 @@ def _supplier_table() -> rx.Component:
         style={"grid_template_columns": SUPPLIER_GRID_COLUMNS, "align_items": "center"},
         padding_y="0.75rem",
         padding_x="8px",
-        background="#f5f5f5",
-        border_bottom="1px solid #ddd",
+        background=TABLE_HEADER,
+        border_bottom=f"1px solid {BORDER}",
     )
     return rx.box(
         header,
         rx.vstack(rx.foreach(SupplierState.filtered_suppliers, _supplier_row), width="100%", spacing="0"),
         width="100%",
         overflow_x="auto",
-        border="1px solid #ddd",
+        border=f"1px solid {BORDER}",
         border_radius="0.4rem",
     )
 
@@ -564,22 +565,9 @@ def _supplier_modal() -> rx.Component:
                         spacing="1",
                         width="100%",
                     ),
-                    rx.vstack(
-                        rx.text("Endereço (opcional)"),
-                        rx.input(
-                            value=SupplierState.endereco,
-                            on_change=SupplierState.change_endereco,
-                            placeholder="Endereço",
-                            disabled=SupplierState.is_saving,
-                            width="100%",
-                        ),
-                        align="stretch",
-                        spacing="1",
-                        width="100%",
-                    ),
                     rx.cond(
                         SupplierState.error_message != "",
-                        rx.text(SupplierState.error_message, color="#b91c1c"),
+                        rx.text(SupplierState.error_message, color=ERROR_TEXT),
                     ),
                     rx.hstack(
                         rx.spacer(),
@@ -600,7 +588,7 @@ def _supplier_modal() -> rx.Component:
                 width="100%",
                 max_width="36rem",
                 padding="1.5rem",
-                background="white",
+                background=SURFACE,
                 border_radius="0.75rem",
                 box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
             ),
@@ -642,8 +630,8 @@ def fornecedores() -> rx.Component:
                 align="center",
                 spacing="3",
             ),
-            rx.cond(SupplierState.success_message != "", rx.text(SupplierState.success_message, color="#15803d")),
-            rx.cond(SupplierState.error_message != "", rx.text(SupplierState.error_message, color="#b91c1c")),
+            rx.cond(SupplierState.success_message != "", rx.text(SupplierState.success_message, color=SUCCESS_TEXT)),
+            rx.cond(SupplierState.error_message != "", rx.text(SupplierState.error_message, color=ERROR_TEXT)),
             section(
                 "Fornecedores cadastrados",
                 rx.cond(
@@ -663,6 +651,7 @@ def fornecedores() -> rx.Component:
                         ),
                     ),
                 ),
+                tone="rose",
             ),
             _supplier_modal(),
             width="100%",

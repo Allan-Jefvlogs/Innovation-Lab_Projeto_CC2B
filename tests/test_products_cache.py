@@ -29,7 +29,7 @@ def _product(name: str = "Produto A") -> dict[str, object]:
 
 def _state(token: str = "session-a") -> ProductsState:
     state = object.__new__(ProductsState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     values = {
         "is_loading": False,
         "is_saving": False,

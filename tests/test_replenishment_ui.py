@@ -34,7 +34,7 @@ from Meu_projeto.services.xano_client import (
 
 def _state() -> ReplenishmentState:
     state = object.__new__(ReplenishmentState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     for name, value in {
         "requestable_status": "loading",
         "requested_status": "loading",
@@ -696,7 +696,10 @@ class ReplenishmentPageTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertFalse(state.request_form_open)
 
+        state = _state()
         state.integration_available = False
+        state.requestable_status = "ready"
+        state.can_create_request = True
         auth = _auth_state({"stock.read", "purchase_request.read", "purchase_request.create"})
         with patch.object(ReplenishmentState, "get_state", new_callable=AsyncMock, return_value=auth):
             await state.open_request_form("41", "P-41", "Produto", "0", "0", "UN", "true", "true")
@@ -1168,7 +1171,7 @@ class ReplenishmentPageTests(unittest.IsolatedAsyncioTestCase):
 class DashboardReplenishmentNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_dashboard_session_exposes_replenishment_only_with_both_read_grants(self):
         state = object.__new__(DashboardState)
-        object.__setattr__(state, "dirty_vars", set())
+        state._init_bookkeeping()
         auth = _auth_state({"stock.read", "purchase_request.read"})
         with patch.object(DashboardState, "get_state", new_callable=AsyncMock, return_value=auth):
             _token, grants = await state._session()
@@ -1181,7 +1184,7 @@ class DashboardReplenishmentNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dashboard_requires_both_read_grants_for_navigation(self):
         state = object.__new__(DashboardState)
-        object.__setattr__(state, "dirty_vars", set())
+        state._init_bookkeeping()
         auth = _auth_state({"stock.read", "purchase_request.read"})
         with patch.object(DashboardState, "get_state", new_callable=AsyncMock, return_value=auth):
             result = await state.open_replenishment()

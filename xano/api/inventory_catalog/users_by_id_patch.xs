@@ -50,31 +50,57 @@ query "users/by_id/{user_id}" verb=PATCH {
       error = "DUPLICATE_EMAIL"
     }
 
-    try_catch {
-      try {
-        db.edit "user" {
-          field_name = "id"
-          field_value = $input.user_id
-          data = {
-            name: $input.name,
-            email: $input.email,
-            inventory_profile_id: $profile.id
+    db.transaction {
+      stack {
+        try_catch {
+          try {
+            db.edit "user" {
+              field_name = "id"
+              field_value = $input.user_id
+              data = {
+                name: $input.name,
+                email: $input.email,
+                inventory_profile_id: $profile.id
+              }
+            } as $updated_user
           }
-        } as $updated_user
-      }
-      catch {
-        db.query "user" {
-          where = $db.user.email == $input.email && $db.user.id != $input.user_id
-          return = {type: "exists"}
-        } as $duplicate_after_write
-        precondition (!$duplicate_after_write) {
-          error_type = "inputerror"
-          error = "DUPLICATE_EMAIL"
+          catch {
+            db.query "user" {
+              where = $db.user.email == $input.email && $db.user.id != $input.user_id
+              return = {type: "exists"}
+            } as $duplicate_after_write
+            precondition (!$duplicate_after_write) {
+              error_type = "inputerror"
+              error = "DUPLICATE_EMAIL"
+            }
+            throw {
+              name = "USER_UPDATE_FAILED"
+              value = "USER_UPDATE_FAILED"
+            }
+          }
         }
-        throw {
-          name = "USER_UPDATE_FAILED"
-          value = "USER_UPDATE_FAILED"
+
+        db.get "user" {
+          field_name = "id"
+          field_value = $auth.id
+          output = ["id", "name"]
+        } as $audit_actor
+
+        precondition ($audit_actor != null) {
+          error_type = "accessdenied"
+          error = "AUDIT_ACTOR_NOT_FOUND"
         }
+
+        db.add inventory_audit_log {
+          data = {
+            actor_user_id: $audit_actor.id,
+            actor_name: $audit_actor.name,
+            action_type: "atualizado",
+            entity_type: "usuario",
+            entity_id: $updated_user.id,
+            summary: "Cadastro de usuário atualizado; valores pessoais foram omitidos do evento."
+          }
+        } as $audit_event
       }
     }
   }

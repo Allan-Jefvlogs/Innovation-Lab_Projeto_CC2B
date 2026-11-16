@@ -16,6 +16,10 @@ query "purchase_requests" verb=GET {
       input = {user_id: $auth.id, permission_code: "purchase_request.read"}
     } as $authorization
 
+    function.run "Inventory/purchase_request_notification_all_access" {
+      input = {user_id: $auth.id}
+    } as $scope
+
     precondition ($input.status == null || $input.status == "aberta" || $input.status == "em_analise" || $input.status == "aprovada" || $input.status == "em_compra" || $input.status == "aguardando_recebimento" || $input.status == "recebimento_parcial" || $input.status == "concluida" || $input.status == "cancelada" || $input.status == "rejeitada") {
       error_type = "inputerror"
       error = "INVALID_INPUT"
@@ -29,7 +33,6 @@ query "purchase_requests" verb=GET {
       join = {
         product: {
           table: "product",
-          type: "inner",
           where: $db.purchase_request.produto_id == $db.product.id
         }
       }
@@ -44,15 +47,19 @@ query "purchase_requests" verb=GET {
         "items.produto_nome",
         "items.quantidade_solicitada",
         "items.quantidade_recebida",
+        "items.unidade_medida_solicitada",
         "items.urgencia",
         "items.solicitante_usuario_id",
         "items.status",
         "items.email_status",
         "items.data_criacao",
         "items.data_atualizacao",
-        "items.data_encerramento"
+        "items.data_encerramento",
+        "itemsTotal",
+        "curPage",
+        "perPage"
       ]
-      where = $db.purchase_request.status ==? $input.status && $db.purchase_request.produto_id ==? $input.produto_id && $db.purchase_request.data_criacao >=? $input.data_inicio && $db.purchase_request.data_criacao <=? $input.data_fim
+      where = ($scope.all_access || $db.purchase_request.solicitante_usuario_id == $auth.id) && $db.purchase_request.status ==? $input.status && $db.purchase_request.produto_id ==? $input.produto_id && $db.purchase_request.data_criacao >=? $input.data_inicio && $db.purchase_request.data_criacao <=? $input.data_fim
       sort = {data_criacao: "desc", id: "desc"}
       return = {type: "list", paging: {page: $input.page, per_page: $input.per_page, totals: true}}
     } as $requests_page

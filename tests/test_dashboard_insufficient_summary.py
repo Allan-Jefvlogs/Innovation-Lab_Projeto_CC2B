@@ -34,6 +34,7 @@ def _item(
 def _dashboard_state(token: str, grants: dict[str, bool]) -> DashboardState:
     state = object.__new__(DashboardState)
     object.__setattr__(state, "dirty_vars", set())
+    DashboardState._init_bookkeeping(state)
     for name, value in {
         "is_loading": False,
         "has_loaded": False,

@@ -1,5 +1,18 @@
 import reflex as rx
 
+from ..components.theme import (
+    BORDER,
+    BORDER_SOFT,
+    ERROR_TEXT,
+    NEUTRAL_STATUS_BACKGROUND,
+    NEUTRAL_STATUS_BORDER,
+    NEUTRAL_STATUS_TEXT,
+    SUCCESS_TEXT,
+    SURFACE,
+    SURFACE_ALT,
+    TABLE_HEADER,
+)
+
 from ..components.layout import page, section
 from ..components.searchable_select import normalize_search_text
 from ..services.xano_client import (
@@ -243,11 +256,21 @@ def _category_row(category: dict[str, str]) -> rx.Component:
         rx.text(category["nome"], padding_x="0.5rem"),
         rx.cond(
             category["status"] == "ativo",
-            rx.badge("Ativa", color_scheme="green"),
+            rx.badge("Ativa", color_scheme="jade"),
             rx.cond(
                 category["status"] == "inativo",
-                rx.badge("Inativa", color_scheme="gray"),
-                rx.badge("Status indisponível", color_scheme="gray"),
+                rx.badge(
+                    "Inativa",
+                    background_color=NEUTRAL_STATUS_BACKGROUND,
+                    color=NEUTRAL_STATUS_TEXT,
+                    border=f"1px solid {NEUTRAL_STATUS_BORDER}",
+                ),
+                rx.badge(
+                    "Status indisponível",
+                    background_color=NEUTRAL_STATUS_BACKGROUND,
+                    color=NEUTRAL_STATUS_TEXT,
+                    border=f"1px solid {NEUTRAL_STATUS_BORDER}",
+                ),
             ),
         ),
         rx.switch(
@@ -265,7 +288,7 @@ def _category_row(category: dict[str, str]) -> rx.Component:
         column_gap="1rem",
         style={"grid_template_columns": CATEGORY_GRID_COLUMNS, "align_items": "center"},
         padding_y="0.75rem",
-        border_bottom="1px solid #e5e7eb",
+        border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -280,8 +303,8 @@ def _category_table() -> rx.Component:
         column_gap="1rem",
         style={"grid_template_columns": CATEGORY_GRID_COLUMNS, "align_items": "center"},
         padding="0.75rem",
-        background="#f5f5f5",
-        border_bottom="1px solid #ddd",
+        background=TABLE_HEADER,
+        border_bottom=f"1px solid {BORDER}",
     )
     return rx.box(
         header,
@@ -292,7 +315,7 @@ def _category_table() -> rx.Component:
         ),
         width="100%",
         overflow_x="auto",
-        border="1px solid #ddd",
+        border=f"1px solid {BORDER}",
         border_radius="0.4rem",
     )
 
@@ -321,7 +344,7 @@ def _create_category_modal() -> rx.Component:
                     ),
                     rx.cond(
                         CategoryState.error_message != "",
-                        rx.text(CategoryState.error_message, color="#b91c1c"),
+                        rx.text(CategoryState.error_message, color=ERROR_TEXT),
                     ),
                     rx.hstack(
                         rx.spacer(),
@@ -342,7 +365,7 @@ def _create_category_modal() -> rx.Component:
                 width="100%",
                 max_width="30rem",
                 padding="1.5rem",
-                background="white",
+                background=SURFACE,
                 border_radius="0.75rem",
                 box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
             ),
@@ -386,11 +409,11 @@ def categorias() -> rx.Component:
             ),
             rx.cond(
                 CategoryState.success_message != "",
-                rx.text(CategoryState.success_message, color="#15803d"),
+                rx.text(CategoryState.success_message, color=SUCCESS_TEXT),
             ),
             rx.cond(
                 CategoryState.error_message != "",
-                rx.text(CategoryState.error_message, color="#b91c1c"),
+                rx.text(CategoryState.error_message, color=ERROR_TEXT),
             ),
             section(
                 "Categorias cadastradas",
@@ -411,6 +434,7 @@ def categorias() -> rx.Component:
                         ),
                     ),
                 ),
+                tone="peach",
             ),
             _create_category_modal(),
             width="100%",

@@ -14,6 +14,24 @@ from zoneinfo import ZoneInfo
 
 import reflex as rx
 
+from ..components.theme import (
+    BORDER,
+    BORDER_SOFT,
+    ERROR_TEXT,
+    MINT_SOFT,
+    PEACH_SOFT,
+    ROSE_SOFT,
+    ROSE_TEXT,
+    SECTION_BANDS,
+    SECTION_SURFACES,
+    SUCCESS_TEXT,
+    SURFACE,
+    SURFACE_ALT,
+    TABLE_HEADER,
+    TEXT_MUTED,
+    WARNING_TEXT,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -1228,20 +1246,26 @@ class ReportState(rx.State):
         return bytes(output)
 
 
-def _report_card(title: str, value: rx.Var) -> rx.Component:
+def _report_card(
+    title: str,
+    value: rx.Var,
+    *,
+    tone: str = "mint",
+    value_color: str = SUCCESS_TEXT,
+) -> rx.Component:
     return rx.box(
         rx.vstack(
-            rx.text(title, color="#64748b", size="2"),
-            rx.heading(value, size="6"),
+            rx.text(title, color=TEXT_MUTED, size="2"),
+            rx.heading(value, size="6", color=value_color),
             align="start",
             spacing="1",
         ),
         flex="1",
         min_width="170px",
         padding="1rem",
-        border="1px solid #e2e8f0",
+        border=f"1px solid {SECTION_BANDS[tone]}",
         border_radius="0.5rem",
-        background="white",
+        background=SECTION_SURFACES[tone],
     )
 
 
@@ -1259,7 +1283,7 @@ def _report_movement_row(movement: dict[str, str]) -> rx.Component:
         column_gap="8px",
         style={"grid_template_columns": REPORT_GRID, "align_items": "center"},
         padding="0.75rem",
-        border_bottom="1px solid #eee",
+        border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -1275,15 +1299,15 @@ def _report_table() -> rx.Component:
         column_gap="8px",
         style={"grid_template_columns": REPORT_GRID, "align_items": "center"},
         padding="0.75rem",
-        background="#f5f5f5",
-        border_bottom="1px solid #ddd",
+        background=TABLE_HEADER,
+        border_bottom=f"1px solid {BORDER}",
     )
     return rx.box(
         header,
         rx.vstack(rx.foreach(ReportState.movements, _report_movement_row), width="100%", spacing="0"),
         width="100%",
         overflow_x="auto",
-        border="1px solid #ddd",
+        border=f"1px solid {BORDER}",
         border_radius="0.4rem",
     )
 
@@ -1302,7 +1326,7 @@ def relatorios() -> rx.Component:
                     ),
                     rx.cond(
                         ReportState.product_options_loading | ReportState.supplier_options_loading,
-                        rx.text("Carregando opções de filtro...", color="#64748B"),
+                        rx.text("Carregando opções de filtro...", color=TEXT_MUTED),
                         rx.fragment(),
                     ),
                     rx.hstack(
@@ -1335,7 +1359,7 @@ def relatorios() -> rx.Component:
                                 is_loading_more=ReportState.product_loading_more,
                                 on_load_more=ReportState.load_more_products,
                                 placeholder="Todos os produtos",
-                                placeholder_color="#cbd5e1",
+                                placeholder_color=BORDER_SOFT,
                                 empty_message=ReportState.product_options_empty_message,
                             ),
                             rx.cond(
@@ -1343,7 +1367,7 @@ def relatorios() -> rx.Component:
                                 rx.vstack(
                                     rx.text(
                                         ReportState.filter_options_message,
-                                        color="#92400E",
+                                        color=WARNING_TEXT,
                                         size="1",
                                     ),
                                     rx.button(
@@ -1376,7 +1400,7 @@ def relatorios() -> rx.Component:
                                 is_loading_more=ReportState.supplier_loading_more,
                                 on_load_more=ReportState.load_more_suppliers,
                                 placeholder="Todos os fornecedores",
-                                placeholder_color="#cbd5e1",
+                                placeholder_color=BORDER_SOFT,
                                 empty_message=ReportState.supplier_options_empty_message,
                             ),
                             rx.cond(
@@ -1384,7 +1408,7 @@ def relatorios() -> rx.Component:
                                 rx.vstack(
                                     rx.text(
                                         ReportState.filter_options_message,
-                                        color="#92400E",
+                                        color=WARNING_TEXT,
                                         size="1",
                                     ),
                                     rx.button(
@@ -1413,15 +1437,16 @@ def relatorios() -> rx.Component:
                         ReportState.filters_dirty,
                         rx.text(
                             "Filtros alterados ainda não aplicados. Tabela e indicadores continuam mostrando os filtros aplicados anteriormente.",
-                            color="#64748b",
+                            color=TEXT_MUTED,
                             size="2",
                         ),
                         rx.fragment(),
                     ),
                     width="100%", align="stretch", spacing="3",
                 ),
+                tone="mint",
             ),
-            rx.cond(ReportState.error_message != "", rx.text(ReportState.error_message, color="#b91c1c")),
+            rx.cond(ReportState.error_message != "", rx.text(ReportState.error_message, color=ERROR_TEXT)),
             rx.cond(
                 ReportState.report_retry_available,
                 rx.button(
@@ -1436,15 +1461,15 @@ def relatorios() -> rx.Component:
                 ReportState.report_results_stale,
                 rx.text(
                     "Os dados exibidos são da última consulta bem-sucedida e podem estar desatualizados.",
-                    color="#92400E",
+                    color=WARNING_TEXT,
                     size="2",
                 ),
                 rx.fragment(),
             ),
             rx.flex(
-                _report_card("Movimentações", ReportState.movement_total),
-                _report_card("Entradas (unidades)", ReportState.entry_quantity_total),
-                _report_card("Saídas (unidades)", ReportState.exit_quantity_total),
+                _report_card("Movimentações", ReportState.movement_total, tone="mint", value_color=SUCCESS_TEXT),
+                _report_card("Entradas (unidades)", ReportState.entry_quantity_total, tone="peach", value_color=WARNING_TEXT),
+                _report_card("Saídas (unidades)", ReportState.exit_quantity_total, tone="rose", value_color=ROSE_TEXT),
                 width="100%", wrap="wrap", gap="4",
             ),
             section(
@@ -1465,12 +1490,13 @@ def relatorios() -> rx.Component:
                             rx.cond(
                                 ReportState.movements.length() > 0,
                                 _report_table(),
-                                rx.text("Nenhuma movimentação encontrada para os filtros selecionados.", color="#64748b", padding="1rem"),
+                                rx.text("Nenhuma movimentação encontrada para os filtros selecionados.", color=TEXT_MUTED, padding="1rem"),
                             ),
                         ),
                     ),
                     width="100%", align="stretch", spacing="3",
                 ),
+                tone="rose",
             ),
             rx.hstack(
                 rx.button("Anterior", on_click=ReportState.load_previous_page, disabled=ReportState.prev_page == None),

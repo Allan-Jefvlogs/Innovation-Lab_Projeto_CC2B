@@ -87,21 +87,21 @@ query "purchase_requests/by_id/{request_id}/cancel" verb=PATCH {
             conditional {
               if ($request_in_transaction != null && $cancel_error == null) {
                 conditional {
-                  if ($request_in_transaction.status == "cancelada") {
+                  if ($request_in_transaction != null && $request_in_transaction.status == "cancelada") {
                     var.update $cancel_error {
                       value = "PURCHASE_REQUEST_ALREADY_CANCELLED"
                     }
                   }
                 }
                 conditional {
-                  if ($cancel_error == null && $request_in_transaction.status != $request_for_authorization.status) {
+                  if ($request_in_transaction != null && $cancel_error == null && $request_in_transaction.status != $request_for_authorization.status) {
                     var.update $cancel_error {
                       value = "PURCHASE_REQUEST_CANCEL_CONFLICT"
                     }
                   }
                 }
                 conditional {
-                  if ($cancel_error == null && $request_in_transaction.status != "aberta" && $request_in_transaction.status != "em_analise") {
+                  if ($request_in_transaction != null && $cancel_error == null && $request_in_transaction.status != "aberta" && $request_in_transaction.status != "em_analise") {
                     var.update $cancel_error {
                       value = "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE"
                     }
@@ -389,4 +389,5 @@ query "purchase_requests/by_id/{request_id}/cancel" verb=PATCH {
     },
     justificativa: $input.justificativa
   }
+  guid = "ftxasfhZkI4vAOyfjwpkt81Ycio"
 }

@@ -51,7 +51,7 @@ class SessionReadCacheTests(unittest.TestCase):
         produtos._cache_set(key_b, {"items": [{"id": "2"}]})
 
         state = object.__new__(AuthState)
-        object.__setattr__(state, "dirty_vars", set())
+        state._init_bookkeeping()
         state.auth_token = token_a
         state.error_message = ""
         state.password_change_notice = ""

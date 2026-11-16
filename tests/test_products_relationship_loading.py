@@ -13,7 +13,7 @@ from Meu_projeto.pages.produtos import ProductsState, auth_client
 def _state() -> ProductsState:
     """Build a State shell without starting Reflex runtime or network services."""
     state = object.__new__(ProductsState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     defaults = {
         "category_options": [], "category_page": 1, "category_has_more": False,
         "category_loading_more": False, "category_selection": "",

@@ -7,15 +7,39 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 
 import reflex as rx
 
-from ..components.layout import page, section
+from ..components.theme import (
+    BORDER,
+    BORDER_SOFT,
+    DASHBOARD_GAP,
+    MINT_SOFT,
+    PEACH,
+    PEACH_SOFT,
+    PEACH_TINT,
+    PANEL_RADIUS,
+    ROSE_TEXT,
+    SAGE_DARK,
+    SECTION_BANDS,
+    SECTION_SURFACES,
+    SUCCESS_TEXT,
+    SURFACE,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    WARNING_TEXT,
+)
+
+from ..components.layout import page
+from ..components.stock_movement_chart import stock_movement_chart
 from ..services.session_read_cache import CACHE_MISS, session_read_cache
 from ..services.session_read_cache import clear_session_read_cache
+from ..services.dashboard_periods import PERIODS, period_bounds
 from ..services.xano_client import (
     XanoAuthError,
     XanoConnectionError,
@@ -48,6 +72,8 @@ DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED = os.getenv(
     "NEXSTOCK_DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
 _INSUFFICIENT_SUMMARY_ENDPOINT = "GET /stock/insufficient_summary"
+REAL_DASHBOARD_MOVEMENTS_ENABLED = os.getenv("NEXSTOCK_DASHBOARD_REAL_MOVEMENTS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 _MOVEMENT_GRID_COLUMNS = rx.breakpoints(
     initial="minmax(0, 1fr) minmax(0, 1fr)",
     md="17fr 22fr 17fr 22fr 22fr",
@@ -76,9 +102,15 @@ def _cache_key(source: str, token: str, params: dict[str, Any]):
 
 
 def _dashboard_endpoint(source: str) -> str:
+    if source == "movements" and REAL_DASHBOARD_MOVEMENTS_ENABLED:
+        return "GET /movements/dashboard"
     if source == "stock" and DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED:
         return _INSUFFICIENT_SUMMARY_ENDPOINT
     return _DASHBOARD_ENDPOINTS[source]
+
+
+def _greeting_for_hour(hour: int) -> str:
+    return "Bom dia" if 5 <= hour < 12 else "Boa tarde" if 12 <= hour < 18 else "Boa noite"
 
 
 def _items_total(response: dict[str, Any], source: str) -> int:
@@ -278,6 +310,74 @@ class DashboardState(rx.State):
     purchase_requests_count: int | None = None
     purchase_requests_error: str = ""
     purchase_requests_stale: bool = False
+    chart_data: list[dict[str, str | int]] = []
+    chart_error: str = ""
+    chart_enabled: bool = REAL_DASHBOARD_MOVEMENTS_ENABLED
+    chart_period: str = "7d"
+    chart_loading: bool = False
+
+    async def change_chart_period(self, value: str):
+        if value not in PERIODS or value == self.chart_period or self.chart_loading or self.is_loading or not self.chart_enabled:
+            return
+        if self.retry_after_epoch > time.time():
+            self.chart_error = "Aguarde o intervalo de recuperação antes de trocar o período."
+            return
+        token, grants = await self._session()
+        if not token or not grants.get("movements"):
+            self.chart_error = "Sem acesso aos dados de movimentação."
+            self.chart_data = []
+            self.recent_movements = []
+            self.movements_accessible = False
+            return
+        self.chart_loading = True
+        self.chart_period = value
+        self.chart_data = []
+        self.chart_error = "Carregando movimentações..."
+        yield
+        start, end = period_bounds(value)
+        params = {"date_from": start, "date_to": end, "period": value}
+        try:
+            payload, stale, error = await _cached_dashboard_read(
+                "movements", token, params, DASHBOARD_OPERATIONAL_TTL,
+                lambda: _project_after(
+                    lambda: auth_client.get_dashboard_movements(token, **params),
+                    lambda data: _project_dashboard_movements(data, value),
+                ),
+            )
+            latest_token, latest_grants = await self._session()
+            if latest_token != token or not latest_grants.get("movements"):
+                self.chart_data = []
+                self.recent_movements = []
+                self.movements_accessible = False
+                self.chart_error = "Sessão ou permissão alterada."
+                return
+            self.chart_data = payload["serie"]
+            self.recent_movements = payload["items"]
+            self.chart_error = "Dados anteriores podem estar desatualizados." if stale else ""
+            if error and getattr(error, "status_code", None) == 429:
+                self.retry_after_epoch = time.time() + _retry_delay_seconds(error)
+        except XanoAuthError:
+            self.chart_data = []
+            yield AuthState.logout
+        except XanoError as exc:
+            self.chart_error = "Não foi possível carregar o período. Use a recuperação manual."
+            if getattr(exc, "status_code", None) == 429:
+                self.retry_after_epoch = time.time() + _retry_delay_seconds(exc)
+            if "movements" not in self.retry_sources:
+                self.retry_sources.append("movements")
+        finally:
+            self.chart_loading = False
+
+    @rx.var
+    def greeting(self) -> str:
+        hour = datetime.now(_SAO_PAULO).hour
+        return _greeting_for_hour(hour)
+
+    @rx.var
+    def first_name(self) -> str:
+        return (self._auth_user_name or "").split(" ")[0]
+
+    _auth_user_name: str = ""
 
     @rx.var
     def has_errors(self) -> bool:
@@ -386,8 +486,11 @@ class DashboardState(rx.State):
         auth_state = await self.get_state(AuthState)
         if not auth_state.session_is_valid:
             return
+        self._auth_user_name = auth_state.user_name or ""
         async for event in self.load_dashboard():
             yield event
+        from ..state.dashboard_notifications import DashboardNotificationsState
+        yield DashboardNotificationsState.load_page
 
     async def _session(self) -> tuple[str, dict[str, bool]]:
         auth_state = await self.get_state(AuthState)
@@ -445,7 +548,7 @@ class DashboardState(rx.State):
         movements = []
         for item in items:
             if not isinstance(item, dict):
-                continue
+                raise XanoServerError("O Xano retornou um registro de movimentação inválido.", status_code=200)
             movement_type = str(item.get("tipo") or "").lower()
             movements.append(
                 {
@@ -459,7 +562,7 @@ class DashboardState(rx.State):
         return {"items": movements}
 
     async def load_dashboard(self, retry_failed_only: bool = False):
-        if self.is_loading:
+        if self.is_loading or self.chart_loading:
             return
         if retry_failed_only and self.retry_after_epoch > time.time():
             remaining = int(self.retry_after_epoch - time.time() + 0.999)
@@ -533,6 +636,8 @@ class DashboardState(rx.State):
                 self._project_stock,
             )
         )
+        movement_start, movement_end = period_bounds(self.chart_period)
+        movement_params = {"date_from": movement_start, "date_to": movement_end, "period": self.chart_period}
         specs: dict[str, tuple[dict[str, Any], float, Callable[[], Any], Callable[[dict[str, Any]], dict[str, Any]]]] = {
             "products": (
                 {"status": "ativo", "page": 1, "per_page": 1},
@@ -542,10 +647,10 @@ class DashboardState(rx.State):
             ),
             "stock": stock_read,
             "movements": (
-                {"page": 1, "per_page": DASHBOARD_MOVEMENT_LIMIT},
+                (movement_params if REAL_DASHBOARD_MOVEMENTS_ENABLED else {"page": 1, "per_page": DASHBOARD_MOVEMENT_LIMIT}),
                 DASHBOARD_OPERATIONAL_TTL,
-                lambda: auth_client.list_movements(token, page=1, per_page=DASHBOARD_MOVEMENT_LIMIT),
-                self._project_movements,
+                (lambda: auth_client.get_dashboard_movements(token, **movement_params)) if REAL_DASHBOARD_MOVEMENTS_ENABLED else (lambda: auth_client.list_movements(token, page=1, per_page=DASHBOARD_MOVEMENT_LIMIT)),
+                (lambda data: _project_dashboard_movements(data, self.chart_period)) if REAL_DASHBOARD_MOVEMENTS_ENABLED else self._project_movements,
             ),
             "purchase_requests": (
                 {},
@@ -608,6 +713,8 @@ class DashboardState(rx.State):
 
             if isinstance(result, XanoPermissionError):
                 self._clear_source(source)
+                if source == "movements":
+                    self.chart_error = "Sem acesso aos dados de movimentação."
                 setattr(
                     self,
                     error_attr,
@@ -632,6 +739,12 @@ class DashboardState(rx.State):
                         self.retry_after_epoch, time.time() + _retry_delay_seconds(result)
                     )
                 setattr(self, error_attr, "Falha ao consultar o Xano.")
+                if source == "movements":
+                    self.chart_error = (
+                        "Dados anteriores podem estar desatualizados."
+                        if self.chart_data
+                        else "Não foi possível carregar os dados do gráfico."
+                    )
                 has_previous_data = self._source_has_value(source)
                 setattr(self, stale_attr, has_previous_data)
                 self.retry_sources.append(source)
@@ -645,6 +758,8 @@ class DashboardState(rx.State):
                 self.stock_alerts = payload["items"]
             elif source == "movements":
                 self.recent_movements = payload["items"]
+                self.chart_data = payload.get("serie", [])
+                self.chart_error = "" if REAL_DASHBOARD_MOVEMENTS_ENABLED else "Integração do gráfico aguarda publicação do contrato Xano."
             else:
                 self.purchase_requests_count = payload["count"]
             setattr(self, error_attr, "" if not is_stale else "Consulta temporariamente indisponível")
@@ -688,6 +803,8 @@ class DashboardState(rx.State):
             self.stock_alerts = []
         elif source == "movements":
             self.recent_movements = []
+            self.chart_data = []
+            self.chart_error = ""
         elif source == "purchase_requests":
             self.purchase_requests_count = None
 
@@ -736,6 +853,29 @@ def _project_purchase_requests_summary(response: dict[str, Any]) -> dict[str, in
     return {"count": count}
 
 
+def _dashboard_period(now: datetime | None = None) -> tuple[str, str]:
+    return period_bounds("7d", now)
+
+
+def _project_dashboard_movements(response: dict[str, Any], period: str = "7d") -> dict[str, Any]:
+    series = response.get("serie")
+    recent = response.get("recentes")
+    if not isinstance(series, list) or not isinstance(recent, dict) or not isinstance(recent.get("items"), list):
+        raise XanoServerError("O Xano retornou o resumo diário de movimentações em formato inesperado.", status_code=200)
+    projected = DashboardState._project_movements(recent)
+    points = []
+    for item in series:
+        if not isinstance(item, dict) or not isinstance(item.get("dia"), str):
+            raise XanoServerError("O Xano retornou uma data diária inválida.", status_code=200)
+        if type(item.get("entradas")) is not int or item["entradas"] < 0 or type(item.get("saidas")) is not int or item["saidas"] < 0:
+            raise XanoServerError("O Xano retornou totais diários inválidos.", status_code=200)
+        day = datetime.strptime(item["dia"], "%Y-%m" if period == "12m" else "%Y-%m-%d").strftime("%m/%Y" if period == "12m" else "%d/%m")
+        points.append({"dia": day, "entradas": item["entradas"], "saidas": item["saidas"]})
+    if len(points) != {"7d": 7, "30d": 30, "12m": 12}[period]:
+        raise XanoServerError("O Xano não retornou o período completo.", status_code=200)
+    return {"items": projected["items"], "serie": points}
+
+
 def _metric_card(
     title: str,
     icon: str,
@@ -744,6 +884,8 @@ def _metric_card(
     *,
     on_click=None,
     actionable: rx.Var | bool = False,
+    tone: str = "mint",
+    icon_color: str = SAGE_DARK,
 ) -> rx.Component:
     interaction_props = {}
     if on_click is not None:
@@ -757,23 +899,36 @@ def _metric_card(
     return rx.box(
         rx.vstack(
             rx.hstack(
-                rx.icon(tag=icon, size=18, color="#2563EB"),
-                rx.text(title, color="#475569", size="2", weight="medium"),
+                rx.text(title, color=TEXT_SECONDARY, font_size="12px", font_weight="620"),
+                rx.box(
+                    rx.icon(tag=icon, size=17, color=icon_color),
+                    display="flex",
+                    align_items="center",
+                    justify_content="center",
+                    width="34px",
+                    height="34px",
+                    border_radius="11px",
+                    background="rgba(255,255,255,0.66)",
+                    flex_shrink="0",
+                ),
+                width="100%",
                 align="center",
-                spacing="2",
+                justify="between",
             ),
-            rx.heading(value, size="7", color="#0F172A"),
-            rx.text(detail, color="#64748B", size="1"),
+            rx.heading(value, font_size="27px", font_weight="760", letter_spacing="-0.8px", line_height="1.2", color="#384A40", margin="10px 0 2px", overflow_wrap="anywhere"),
+            rx.text(detail, color=TEXT_MUTED, font_size="11px"),
             align="start",
-            spacing="2",
+            spacing="0",
+            width="100%",
         ),
-        border="1px solid #DBEAFE",
-        border_radius="12px",
-        padding="20px",
-        background="white",
-        box_shadow="0 1px 3px rgba(15, 23, 42, 0.05)",
-        flex="1",
-        min_width="190px",
+        border="1px solid #E9EFEB",
+        border_radius=PANEL_RADIUS,
+        padding="17px 18px",
+        background=SECTION_SURFACES[tone],
+        min_height="131px",
+        height="100%",
+        width="100%",
+        min_width="0",
         **interaction_props,
     )
 
@@ -784,6 +939,8 @@ def _purchase_requests_card() -> rx.Component:
         "clipboard-list",
         DashboardState.purchase_requests_value,
         DashboardState.purchase_requests_detail,
+        tone="rose",
+        icon_color=ROSE_TEXT,
     )
 
 
@@ -799,25 +956,29 @@ def _movement_grid_row(*cells: rx.Component, header: bool = False) -> rx.Compone
         width="100%",
         min_width="0",
         box_sizing="border-box",
-        padding="0.7rem 0.5rem" if header else "0.8rem 0.5rem",
-        border_bottom="1px solid #CBD5E1" if header else "1px solid #E2E8F0",
+        padding="11px 12px" if header else "12px",
+        font_size="9px" if header else "12px",
+        text_transform="uppercase" if header else "none",
+        letter_spacing="0.8px" if header else "normal",
+        background="#F8FAF8" if header else "transparent",
+        border_bottom=f"1px solid {BORDER_SOFT}",
         role="row",
     )
 
 
 def _movement_header() -> rx.Component:
     return _movement_grid_row(
-        rx.text("Tipo", weight="bold", color="#475569", text_align="left", min_width="0", role="columnheader"),
-        rx.text("Produto", weight="bold", color="#475569", text_align="left", min_width="0", role="columnheader"),
-        rx.text("Qtde.", weight="bold", color="#475569", text_align="left", min_width="0", role="columnheader"),
-        rx.text("Data", weight="bold", color="#475569", text_align="left", min_width="0", role="columnheader"),
-        rx.text("Usuário", weight="bold", color="#475569", text_align="left", min_width="0", role="columnheader"),
+        rx.text("Tipo", weight="bold", color=TEXT_SECONDARY, text_align="left", min_width="0", role="columnheader"),
+        rx.text("Produto", weight="bold", color=TEXT_SECONDARY, text_align="left", min_width="0", role="columnheader"),
+        rx.text("Qtde.", weight="bold", color=TEXT_SECONDARY, text_align="left", min_width="0", role="columnheader"),
+        rx.text("Data", weight="bold", color=TEXT_SECONDARY, text_align="left", min_width="0", role="columnheader"),
+        rx.text("Usuário", weight="bold", color=TEXT_SECONDARY, text_align="left", min_width="0", role="columnheader"),
         header=True,
     )
 
 
 def _movement_row(item: dict[str, str]) -> rx.Component:
-    movement_color = rx.cond(item["tipo"] == "Entrada", "#15803D", "#1D4ED8")
+    movement_color = rx.cond(item["tipo"] == "Entrada", SUCCESS_TEXT, ROSE_TEXT)
     return _movement_grid_row(
         rx.text(
             item["tipo"],
@@ -848,7 +1009,7 @@ def _movement_row(item: dict[str, str]) -> rx.Component:
         ),
         rx.text(
             item["data"],
-            color="#64748B",
+            color=TEXT_MUTED,
             text_align="left",
             white_space="normal",
             overflow_wrap="anywhere",
@@ -857,7 +1018,7 @@ def _movement_row(item: dict[str, str]) -> rx.Component:
         ),
         rx.text(
             item["usuario"],
-            color="#475569",
+            color=TEXT_SECONDARY,
             text_align="left",
             white_space="normal",
             overflow_wrap="anywhere",
@@ -867,33 +1028,176 @@ def _movement_row(item: dict[str, str]) -> rx.Component:
     )
 
 
+def _stock_alert_progress(current: str | rx.Var, minimum_value: str | rx.Var) -> tuple[rx.Var, rx.Var]:
+    """Proporção visual dos valores exibidos, sem autoridade sobre operações de estoque."""
+    minimum = rx.Var.create(minimum_value)
+    quantity = rx.Var.create(current)
+    has_ratio = (minimum != "0") & (minimum != "—") & (quantity != "—")
+    ratio = quantity.replace(",", ".").to(float) / minimum.replace(",", ".").to(float) * 100
+    percentage = rx.cond(has_ratio, rx.cond(ratio > 100, 100, ratio), 0)
+    return has_ratio, percentage
+
+
 def _stock_alert(item: dict[str, str]) -> rx.Component:
-    summary_detail = (
+    has_ratio, percentage = _stock_alert_progress(item["atual"], item["minimo"])
+    situation = (
         rx.text(
             rx.cond(item["situacao_estoque"] == "sem_estoque", "Sem estoque", "Abaixo do mínimo"),
-            " · ",
-            item["unidade_medida"],
-            size="1",
-            color="#64748B",
+            font_size="10px",
+            color=WARNING_TEXT,
         )
         if DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED
         else rx.fragment()
     )
-    return rx.hstack(
-        rx.icon(tag="triangle-alert", size=16, color="#B45309"),
-        rx.vstack(
-            rx.text(item["nome"], weight="medium", color="#334155"),
-            rx.text("Código ", item["codigo"], size="1", color="#64748B"),
-            summary_detail,
-            align="start",
-            spacing="0",
-            flex="1",
+    unit = item["unidade_medida"] if DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED else ""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(item["nome"], font_size="12px", font_weight="650", color=TEXT_PRIMARY, overflow_wrap="anywhere", min_width="0"),
+            rx.text(item["atual"], " ", unit, font_size="12px", font_weight="730", color=TEXT_PRIMARY, white_space="nowrap"),
+            width="100%",
+            justify="between",
+            align="center",
+            gap="10px",
         ),
-        rx.text(item["atual"], " / ", item["minimo"], color="#92400E", weight="medium", white_space="nowrap"),
+        rx.hstack(
+            rx.text("Mínimo: ", item["minimo"], " ", unit, " · Código ", item["codigo"], font_size="10px", color=TEXT_MUTED),
+            situation,
+            width="100%",
+            justify="between",
+            align="start",
+            gap="10px",
+        ),
+        rx.cond(
+            has_ratio,
+            rx.box(
+                rx.box(width=percentage.to_string() + "%", height="100%", border_radius="6px", background=PEACH),
+                width="100%",
+                height="7px",
+                border_radius="6px",
+                background="#F0F2EF",
+                role="progressbar",
+                aria_label="Saldo atual em relação ao estoque mínimo",
+                aria_valuenow=percentage,
+                aria_valuemin=0,
+                aria_valuemax=100,
+            ),
+            rx.fragment(),
+        ),
         width="100%",
-        align="center",
-        padding="0.55rem 0",
-        border_bottom="1px solid #FEF3C7",
+        align="stretch",
+        gap="4px",
+    )
+
+
+def _dashboard_panel(title: str, body: rx.Component, *, attention: bool = False) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            *([rx.heading(title, font_size="15px", font_weight="650", letter_spacing="-0.2px", line_height="1.3")] if title else []),
+            body,
+            width="100%",
+            align="stretch",
+            gap="15px",
+        ),
+        width="100%",
+        min_width="0",
+        height="100%",
+        padding=rx.breakpoints({"0px": "15px", "701px": "19px"}),
+        border=f"1px solid {BORDER_SOFT}",
+        border_radius=PANEL_RADIUS,
+        background=SURFACE,
+        box_shadow="0 3px 12px rgba(45,65,54,0.025)",
+    )
+
+
+def _recent_movements_panel() -> rx.Component:
+    return _dashboard_panel(
+        "Movimentações recentes",
+        rx.vstack(
+            rx.cond(
+                DashboardState.movements_accessible & (DashboardState.recent_movements.length() > 0),
+                rx.box(
+                    _movement_header(),
+                    rx.foreach(DashboardState.recent_movements, _movement_row),
+                    display="block",
+                    width="100%",
+                    min_width="0",
+                    role="table",
+                    aria_label="Movimentações recentes",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                DashboardState.movements_message != "",
+                rx.text(DashboardState.movements_message, color=TEXT_MUTED, size="2"),
+                rx.fragment(),
+            ),
+            width="100%",
+            align="stretch",
+            spacing="2",
+        ),
+    )
+
+
+def _stock_alerts_panel() -> rx.Component:
+    return _dashboard_panel(
+        "",
+        rx.vstack(
+            rx.hstack(
+                rx.vstack(
+                    rx.heading("Atenção ao estoque", font_size="15px", font_weight="650", letter_spacing="-0.2px"),
+                    rx.text("Produtos abaixo do mínimo ou sem estoque" if DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED else "Produtos abaixo do mínimo", font_size="11px", color=TEXT_MUTED),
+                    align="start",
+                    spacing="1",
+                ),
+                rx.cond(
+                    DashboardState.replenishment_accessible,
+                    rx.link("Ver todos →", href="/reposicao", font_size="11px", weight="bold", color=SAGE_DARK, text_decoration="none"),
+                    rx.fragment(),
+                ),
+                width="100%",
+                justify="between",
+                align="center",
+                gap="12px",
+            ),
+            rx.cond(
+                DashboardState.stock_accessible & (DashboardState.stock_alerts.length() > 0),
+                rx.vstack(rx.foreach(DashboardState.stock_alerts, _stock_alert), width="100%", align="stretch", gap="14px", aria_label="Alertas de estoque"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                DashboardState.stock_message != "",
+                rx.text(DashboardState.stock_message, color=TEXT_MUTED, size="2"),
+                rx.fragment(),
+            ),
+            width="100%",
+            align="stretch",
+            gap="15px",
+        ),
+        attention=True,
+    )
+
+
+def _dashboard_heading() -> rx.Component:
+    return rx.flex(
+        rx.vstack(
+            rx.hstack(
+                rx.cond(
+                    DashboardState.first_name != "",
+                    rx.heading(DashboardState.greeting, ", ", DashboardState.first_name, font_size="27px", letter_spacing="-0.8px", color="#35423C"),
+                    rx.heading(DashboardState.greeting, font_size="27px", letter_spacing="-0.8px", color="#35423C"),
+                ),
+                gap="8px",
+                align="center",
+            ),
+            align="start",
+            spacing="1",
+        ),
+        width="100%",
+        justify="between",
+        align="end",
+        wrap="wrap",
+        gap="18px",
+        margin_bottom="7px",
     )
 
 
@@ -901,16 +1205,16 @@ def dashboard() -> rx.Component:
     return page(
         "Dashboard",
         rx.vstack(
-            rx.text("Visão geral do estoque e das movimentações recentes.", color="#64748B"),
+            _dashboard_heading(),
             rx.cond(
                 DashboardState.is_loading,
-                rx.hstack(rx.spinner(size="1"), rx.text("Atualizando dados do Xano...", size="2", color="#64748B"), align="center", spacing="2"),
+                rx.hstack(rx.spinner(size="1"), rx.text("Atualizando dados do Xano...", size="2", color=TEXT_MUTED), align="center", spacing="2"),
                 rx.fragment(),
             ),
             rx.cond(
                 DashboardState.error_message != "",
                 rx.hstack(
-                    rx.text(DashboardState.error_message, color="#92400E", size="2"),
+                    rx.text(DashboardState.error_message, color=WARNING_TEXT, size="2"),
                     rx.button(
                         "Tentar novamente",
                         on_click=DashboardState.retry_dashboard,
@@ -924,8 +1228,15 @@ def dashboard() -> rx.Component:
                 ),
                 rx.fragment(),
             ),
-            rx.flex(
-                _metric_card("Produtos ativos", "package", DashboardState.products_value, DashboardState.products_detail),
+            rx.grid(
+                _metric_card(
+                    "Produtos ativos",
+                    "package",
+                    DashboardState.products_value,
+                    DashboardState.products_detail,
+                    tone="mint",
+                    icon_color=SAGE_DARK,
+                ),
                 _purchase_requests_card(),
                 _metric_card(
                     "Estoque insuficiente" if DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED else "Abaixo do mínimo",
@@ -934,79 +1245,33 @@ def dashboard() -> rx.Component:
                     DashboardState.stock_detail,
                     on_click=DashboardState.open_replenishment,
                     actionable=DashboardState.replenishment_accessible,
+                    tone="peach",
+                    icon_color=WARNING_TEXT,
                 ),
                 width="100%",
-                gap="16px",
-                margin_bottom="4px",
-                wrap="wrap",
+                grid_template_columns=rx.breakpoints({"0px": "repeat(2, minmax(0, 1fr))", "1051px": "repeat(3, minmax(0, 1fr))"}),
+                gap=DASHBOARD_GAP,
+                align_items="stretch",
             ),
-            rx.flex(
-                rx.box(
-                    section(
-                        "Movimentações recentes",
-                        rx.vstack(
-                            rx.cond(
-                                DashboardState.movements_accessible
-                                & (DashboardState.recent_movements.length() > 0),
-                                rx.box(
-                                    rx.box(
-                                        _movement_header(),
-                                        rx.foreach(DashboardState.recent_movements, _movement_row),
-                                        display="block",
-                                        width="100%",
-                                            min_width="0",
-                                        role="table",
-                                        aria_label="Movimentações recentes",
-                                    ),
-                                    width="100%",
-                                    min_width="0",
-                                ),
-                                rx.fragment(),
-                            ),
-                            rx.cond(
-                                DashboardState.movements_message != "",
-                                rx.text(DashboardState.movements_message, color="#64748B", size="2"),
-                                rx.fragment(),
-                            ),
-                            width="100%",
-                            align="stretch",
-                            spacing="2",
-                        ),
-                    ),
-                    width="100%",
-                    flex="1.5",
-                    min_width="360px",
+            rx.grid(
+                _dashboard_panel(
+                    "",
+                    stock_movement_chart(DashboardState.chart_data, status_message=DashboardState.chart_error,
+                                         period=DashboardState.chart_period, on_period_change=DashboardState.change_chart_period,
+                                         loading=DashboardState.chart_loading | DashboardState.is_loading, enabled=DashboardState.chart_enabled),
                 ),
-                rx.box(
-                    section(
-                        "Alertas de estoque",
-                        rx.vstack(
-                            rx.cond(
-                                DashboardState.stock_accessible & (DashboardState.stock_alerts.length() > 0),
-                                rx.vstack(rx.foreach(DashboardState.stock_alerts, _stock_alert), width="100%", align="stretch", spacing="0"),
-                                rx.fragment(),
-                            ),
-                            rx.cond(
-                                DashboardState.stock_message != "",
-                                rx.text(DashboardState.stock_message, color="#64748B", size="2"),
-                                rx.fragment(),
-                            ),
-                            width="100%",
-                            align="stretch",
-                            spacing="2",
-                        ),
-                    ),
-                    width="100%",
-                    flex="1",
-                    min_width="300px",
+                _stock_alerts_panel(),
+                grid_template_columns=rx.breakpoints(
+                    {"0px": "minmax(0, 1fr)", "1051px": "minmax(0, 1.5fr) minmax(280px, 0.9fr)"},
                 ),
                 width="100%",
-                align="start",
-                gap="16px",
-                wrap="wrap",
+                min_width="0",
+                align_items="stretch",
+                gap=DASHBOARD_GAP,
             ),
+            _recent_movements_panel(),
             width="100%",
             align="stretch",
-            spacing="4",
+            gap="18px",
         ),
     )

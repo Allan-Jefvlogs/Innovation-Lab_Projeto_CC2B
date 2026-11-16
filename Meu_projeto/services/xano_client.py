@@ -10,12 +10,13 @@ import os
 import re
 import time
 from collections import deque
-from datetime import timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, Optional
 import httpx
+from .dashboard_periods import expected_keys, timestamp_milliseconds
 from .session_read_cache import session_read_cache
 
 
@@ -83,9 +84,20 @@ _DASHBOARD_CACHE_ENDPOINTS = (
     "GET /purchase_requests/summary",
     "GET /purchase_requests",
     "GET /purchase_requests/by_id",
+    "GET /purchase_requests/notifications",
+    "GET /movements/dashboard",
 )
 
+_DASHBOARD_CONFIG_ERRORS = {
+    "NOTIFICATIONS_ACTIVATION_MARKER_MISSING": "O marco das notificações não está disponível no backend.",
+    "NOTIFICATIONS_ACTIVATION_MARKER_EMPTY": "O marco das notificações está vazio no backend.",
+    "NOTIFICATIONS_ACTIVATION_MARKER_INVALID": "O formato do marco das notificações precisa ser conferido no backend.",
+    "NOTIFICATIONS_ACTIVATION_MARKER_CONVERSION_FAILED": "O backend não conseguiu interpretar o marco das notificações.",
+    "DATE_RANGE_MUST_START_AT_LOCAL_MIDNIGHT": "O backend recusou o início do período do gráfico; confira o contrato de datas.",
+}
+
 _XANO_ERROR_CODES = {
+    *_DASHBOARD_CONFIG_ERRORS,
     "DUPLICATE_VALUE",
     "PASSWORD_CHANGE_NOT_REQUIRED",
     "BUSINESS_RULE_VIOLATION",
@@ -99,6 +111,10 @@ _XANO_ERROR_CODES = {
     "PROFILE_INVALID",
     "DUPLICATE_EMAIL",
     "PASSWORD_MISMATCH",
+    "PASSWORD_POLICY_INVALID",
+    "CURRENT_PASSWORD_INVALID",
+    "NEW_PASSWORD_MUST_DIFFER",
+    "INITIAL_PASSWORD_FLOW_REQUIRED",
     "USER_INACTIVE",
     "USER_NOT_FOUND",
     "USER_CREATE_FAILED",
@@ -132,11 +148,23 @@ _XANO_ERROR_CODES = {
     "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE",
     "PURCHASE_REQUEST_CANCEL_CONFLICT",
     "PURCHASE_REQUEST_CANCEL_FAILED",
+    "PURCHASE_REQUEST_STATUS_CONFLICT",
+    "PURCHASE_REQUEST_TRANSITION_INVALID",
+    "INVALID_EXPECTED_STATUS",
+    "RECEIPT_LINK_REQUIRED",
+    "RECEIPT_INPUT_INVALID",
+    "RECEIPT_IDEMPOTENCY_CONFLICT",
+    "RECEIPT_STATUS_INVALID",
+    "RECEIPT_PRODUCT_MISMATCH",
+    "RECEIPT_UNIT_UNCONFIRMED",
+    "RECEIPT_UNIT_MISMATCH",
+    "RECEIPT_BALANCE_INVALID",
+    "RECEIPT_EXCEEDS_REMAINING",
     "TOO_MANY_REQUESTS",
 }
 
 _SENSITIVE_LOG_KEYS = {
-    "authorization", "token", "auth_token", "password", "confirm_password", "secret"
+    "authorization", "token", "auth_token", "password", "confirm_password", "current_password", "new_password", "secret"
 }
 
 
@@ -179,6 +207,7 @@ def _extract_xano_error_code(payload: Any) -> str:
             if normalized in _XANO_ERROR_CODES:
                 found.add(normalized)
     for code in (
+        *_DASHBOARD_CONFIG_ERRORS,
         "USER_INACTIVE",
         "DUPLICATE_VALUE",
         "BUSINESS_RULE_VIOLATION",
@@ -190,6 +219,10 @@ def _extract_xano_error_code(payload: Any) -> str:
         "PROFILE_INVALID",
         "DUPLICATE_EMAIL",
         "PASSWORD_MISMATCH",
+        "PASSWORD_POLICY_INVALID",
+        "CURRENT_PASSWORD_INVALID",
+        "NEW_PASSWORD_MUST_DIFFER",
+        "INITIAL_PASSWORD_FLOW_REQUIRED",
         "USER_NOT_FOUND",
         "USER_CREATE_FAILED",
         "USER_UPDATE_FAILED",
@@ -219,6 +252,18 @@ def _extract_xano_error_code(payload: Any) -> str:
         "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE",
         "PURCHASE_REQUEST_CANCEL_CONFLICT",
         "PURCHASE_REQUEST_CANCEL_FAILED",
+        "PURCHASE_REQUEST_STATUS_CONFLICT",
+        "PURCHASE_REQUEST_TRANSITION_INVALID",
+        "INVALID_EXPECTED_STATUS",
+        "RECEIPT_INPUT_INVALID",
+        "RECEIPT_LINK_REQUIRED",
+        "RECEIPT_IDEMPOTENCY_CONFLICT",
+        "RECEIPT_STATUS_INVALID",
+        "RECEIPT_PRODUCT_MISMATCH",
+        "RECEIPT_UNIT_UNCONFIRMED",
+        "RECEIPT_UNIT_MISMATCH",
+        "RECEIPT_BALANCE_INVALID",
+        "RECEIPT_EXCEEDS_REMAINING",
         "INVALID_QUANTITY",
         "INVALID_URGENCY",
         "INVALID_INPUT",
@@ -507,6 +552,7 @@ class XanoAuthClient:
         group_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Executa uma chamada autenticada a um grupo de APIs do estoque."""
+        sensitive_password_route = path == "/auth/change-password"
         try:
             response = await self._send_request(
                 method,
@@ -517,7 +563,7 @@ class XanoAuthClient:
                 auth_token=auth_token,
             )
         except (httpx.RequestError, httpx.TimeoutException) as exc:
-            logger.exception(
+            (logger.warning if sensitive_password_route else logger.exception)(
                 "Xano transport failed: method=%s path=%s exception_type=%s",
                 method,
                 path,
@@ -530,7 +576,7 @@ class XanoAuthClient:
         try:
             data = response.json() if response.content else {}
         except ValueError as exc:
-            logger.exception(
+            (logger.warning if sensitive_password_route else logger.exception)(
                 "Xano JSON decode failed: method=%s path=%s status=%s",
                 method,
                 path,
@@ -546,7 +592,7 @@ class XanoAuthClient:
             path,
             response.status_code,
             type(data).__name__,
-            sorted(data.keys()) if isinstance(data, dict) else None,
+            sorted(data.keys()) if isinstance(data, dict) and not sensitive_password_route else None,
         )
 
         if response.status_code in (200, 201):
@@ -563,8 +609,11 @@ class XanoAuthClient:
                     status_code=response.status_code,
                 )
             if method.upper() != "GET":
-                for endpoint in _DASHBOARD_CACHE_ENDPOINTS:
-                    session_read_cache.invalidate(endpoint=endpoint, token=auth_token)
+                if path.startswith("/purchase_requests/notifications/"):
+                    session_read_cache.invalidate(endpoint="GET /purchase_requests/notifications", token=auth_token)
+                else:
+                    for endpoint in _DASHBOARD_CACHE_ENDPOINTS:
+                        session_read_cache.invalidate(endpoint=endpoint, token=auth_token)
             return data
 
         payload = data if isinstance(data, dict) else {}
@@ -574,10 +623,10 @@ class XanoAuthClient:
             path,
             response.status_code,
             type(data).__name__,
-            sorted(data.keys()) if isinstance(data, dict) else None,
-            _safe_error_log_value(data.get("code")) if isinstance(data, dict) else None,
-            _safe_error_log_value(data.get("message")) if isinstance(data, dict) else None,
-            _safe_error_log_value(data.get("payload")) if isinstance(data, dict) else None,
+            sorted(data.keys()) if isinstance(data, dict) and not sensitive_password_route else None,
+            (_extract_xano_error_code(data) if sensitive_password_route else _safe_error_log_value(data.get("code"))) if isinstance(data, dict) else None,
+            _safe_error_log_value(data.get("message")) if isinstance(data, dict) and not sensitive_password_route else None,
+            _safe_error_log_value(data.get("payload")) if isinstance(data, dict) and not sensitive_password_route else None,
         )
         error_code = (
             "TOO_MANY_REQUESTS"
@@ -604,6 +653,9 @@ class XanoAuthClient:
             )
 
         friendly_messages = {
+            "PASSWORD_MISMATCH": "A confirmação da senha não confere.",
+            "PASSWORD_POLICY_INVALID": "A senha não atende à política de segurança.",
+            "CURRENT_PASSWORD_INVALID": "A senha atual informada não confere.",
             "INVALID_QUANTITY": "Informe uma quantidade maior que zero.",
             "INVALID_URGENCY": "Selecione uma urgência válida.",
             "STOCK_BALANCE_INVALID": "O saldo de estoque retornado não permite criar a solicitação.",
@@ -618,11 +670,13 @@ class XanoAuthClient:
             "PURCHASE_REQUEST_STATUS_NOT_CANCELLABLE": "O status atual não permite cancelar esta solicitação.",
             "PURCHASE_REQUEST_CANCEL_CONFLICT": "A solicitação mudou enquanto era cancelada. Atualize a lista.",
             "PURCHASE_REQUEST_CANCEL_FAILED": "O Xano não confirmou o cancelamento. Verifique a lista antes de repetir.",
+            "PURCHASE_REQUEST_STATUS_CONFLICT": "A solicitação mudou. Atualize os dados antes de escolher outro status.",
+            "PURCHASE_REQUEST_TRANSITION_INVALID": "Essa alteração de status não é permitida.",
+            "INVALID_EXPECTED_STATUS": "Atualize a solicitação antes de alterar o status.",
             "INVALID_INPUT": "Confira os campos informados e tente novamente.",
             "INPUT_ERROR": "Confira os campos obrigatórios e os valores informados.",
             "INPUTERROR": "Confira os campos obrigatórios e os valores informados.",
             "VALIDATION_ERROR": "Confira os campos obrigatórios e os valores informados.",
-            "PASSWORD_MISMATCH": "A confirmação da senha não confere.",
             "DUPLICATE_VALUE": "Já existe um produto com esse código.",
             "BUSINESS_RULE_VIOLATION": "A Categoria selecionada não existe ou está inativa. Selecione uma Categoria ativa.",
             "NOT_FOUND": "O produto solicitado não foi encontrado.",
@@ -638,6 +692,7 @@ class XanoAuthClient:
             "STOCK_CONCURRENCY_CONFLICT": "Houve um conflito ao atualizar o estoque. Tente novamente.",
             "TOO_MANY_REQUESTS": "O Xano está limitando as solicitações. Aguarde e tente novamente.",
         }
+        friendly_messages.update(_DASHBOARD_CONFIG_ERRORS)
         message = friendly_messages.get(
             error_code,
             f"O Xano não concluiu a operação ({response.status_code}). Tente novamente.",
@@ -895,6 +950,7 @@ class XanoAuthClient:
         documento: str,
         contato: Optional[str] = None,
         endereco: Optional[str] = None,
+        limpar_endereco: bool = False,
     ) -> Dict[str, Any]:
         """Atualiza dados cadastrais sem alterar status nem ID do Fornecedor."""
         payload: Dict[str, Any] = {
@@ -908,7 +964,7 @@ class XanoAuthClient:
             payload["limpar_contato"] = True
         if endereco and endereco.strip():
             payload["endereco"] = endereco.strip()
-        else:
+        if limpar_endereco:
             payload["limpar_endereco"] = True
         return await self._inventory_request(
             "PATCH",
@@ -994,11 +1050,153 @@ class XanoAuthClient:
         )
         count = data.get("solicitacoes_abertas") if isinstance(data, dict) else None
         if type(count) is not int or count < 0:
-            raise XanoServerError(
+            logger.warning(
+                "Dashboard summary contract failed: endpoint=GET /purchase_requests/summary status=200 "
+                "contract_field=solicitacoes_abertas expected=nonnegative_integer found_type=%s",
+                type(count).__name__ if isinstance(data, dict) and "solicitacoes_abertas" in data else "missing",
+            )
+            error = XanoServerError(
                 "O Xano retornou uma contagem de solicitações abertas inválida.",
                 status_code=200,
             )
+            error.origin = "response_contract"
+            raise error
         return {"solicitacoes_abertas": count}
+
+    async def get_purchase_request_notifications(
+        self, auth_token: str, *, page: int = 1, per_page: int = 10
+    ) -> Dict[str, Any]:
+        data = await self._inventory_request(
+            "GET", "/purchase_requests/notifications", auth_token,
+            params={"page": page, "per_page": per_page}, group_url=self.stock_group_url,
+        )
+        def invalid(field: str, expected: str, container: Any, key: str) -> XanoServerError:
+            # Only fixed schema paths and type names: never response values or tokens.
+            error = XanoServerError("O Xano retornou notificações em formato inesperado.", status_code=200)
+            error.origin = "response_contract"
+            error.contract_field = field
+            error.contract_expected = expected
+            error.contract_found_type = (
+                "missing" if isinstance(container, dict) and key not in container
+                else type(container.get(key) if isinstance(container, dict) else container).__name__
+            )
+            return error
+
+        if not isinstance(data, dict):
+            raise invalid("$", "object", data, "$")
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise invalid("items", "array", data, "items")
+        for field, minimum in (("unreadTotal", 0), ("curPage", 1), ("perPage", 1), ("itemsTotal", len(items))):
+            if type(data.get(field)) is not int:
+                raise invalid(field, "integer", data, field)
+            if data[field] < minimum:
+                raise invalid(field, "valid pagination/count integer", data, field)
+        for item in items:
+            if not isinstance(item, dict):
+                raise invalid("items[]", "object", item, "$")
+            for field, expected_type in (("history_id", int), ("purchase_request_id", int),
+                                         ("descricao", str), ("evento", str), ("lida", bool)):
+                if type(item.get(field)) is not expected_type:
+                    raise invalid(f"items[].{field}", expected_type.__name__, item, field)
+            if isinstance(item.get("data_evento"), bool) or not isinstance(item.get("data_evento"), (int, float)):
+                raise invalid("items[].data_evento", "numeric timestamp in milliseconds", item, "data_evento")
+            if item.get("status_novo") is not None and (not isinstance(item["status_novo"], str) or item["status_novo"] not in {
+                "aberta", "em_analise", "aprovada", "rejeitada", "em_compra", "aguardando_recebimento", "recebimento_parcial", "concluida", "cancelada",
+            }):
+                raise invalid("items[].status_novo", "known status string or null", item, "status_novo")
+        return data
+
+    async def mark_purchase_request_notification_read(self, auth_token: str, history_id: int) -> Dict[str, Any]:
+        data = await self._inventory_request(
+            "PATCH", f"/purchase_requests/notifications/by_id/{history_id}/read", auth_token,
+            json_payload={}, group_url=self.stock_group_url,
+        )
+        if type(data.get("history_id")) is not int or data["history_id"] != history_id or data.get("lida") is not True:
+            raise XanoServerError("O Xano não confirmou a leitura da notificação.", status_code=200)
+        return data
+
+    async def get_dashboard_movements(
+        self, auth_token: str, *, date_from: str, date_to: str, period: str = "7d"
+    ) -> Dict[str, Any]:
+        keys = expected_keys(period, date_from, date_to)
+        data = await self._inventory_request(
+            "GET", "/movements/dashboard", auth_token,
+            params={"date_from": timestamp_milliseconds(date_from), "date_to": timestamp_milliseconds(date_to), "period": period}, group_url=self.stock_group_url,
+        )
+        series = data.get("serie")
+        recent = data.get("recentes")
+        if not isinstance(series, list) or not isinstance(recent, dict) or not isinstance(recent.get("items"), list):
+            raise XanoServerError("O Xano retornou o resumo de movimentações em formato inesperado.", status_code=200)
+        if len(series) != len(keys):
+            raise XanoServerError("O Xano não retornou o período completo de movimentações.", status_code=200)
+        if (type(recent.get("curPage")) is not int or recent["curPage"] != 1
+                or type(recent.get("perPage")) is not int or recent["perPage"] != 5):
+            raise XanoServerError("O Xano retornou paginação inválida para as movimentações recentes.", status_code=200)
+        if len(recent["items"]) > 5 or any(not isinstance(item, dict) for item in recent["items"]):
+            logger.warning(
+                "Dashboard recent contract failed: endpoint=GET /movements/dashboard status=200 "
+                "contract_field=recentes.items expected=up_to_five_objects",
+            )
+            error = XanoServerError("O Xano retornou registros recentes inválidos.", status_code=200)
+            error.origin = "response_contract"
+            raise error
+        dates: set[str] = set()
+        for point in series:
+            if (not isinstance(point, dict) or not isinstance(point.get("dia"), str)
+                    or type(point.get("entradas")) is not int or point["entradas"] < 0
+                    or type(point.get("saidas")) is not int or point["saidas"] < 0):
+                raise XanoServerError("O Xano retornou uma série diária inválida.", status_code=200)
+            try:
+                datetime.strptime(point["dia"], "%Y-%m" if period == "12m" else "%Y-%m-%d")
+            except ValueError as exc:
+                raise XanoServerError("O Xano retornou uma data diária inválida.", status_code=200) from exc
+            dates.add(point["dia"])
+        if [point["dia"] for point in series] != keys:
+            raise XanoServerError("O Xano retornou datas fora de ordem ou do período solicitado.", status_code=200)
+        if not recent["items"] and any(point["entradas"] or point["saidas"] for point in series):
+            logger.warning(
+                "Dashboard recent inconsistency: endpoint=GET /movements/dashboard status=200 "
+                "recent_items=0 series_has_operations=true; inspect recent query output",
+            )
+        return data
+
+    async def change_password(
+        self, auth_token: str, current_password: str, new_password: str, confirm_password: str
+    ) -> Dict[str, Any]:
+        messages = {
+            "CURRENT_PASSWORD_INVALID": "A senha atual está incorreta.",
+            "NEW_PASSWORD_MUST_DIFFER": "A nova senha deve ser diferente da senha atual.",
+            "PASSWORD_MISMATCH": "A confirmação da senha não confere.",
+            "PASSWORD_POLICY_INVALID": "A nova senha deve ter ao menos 8 caracteres, uma letra e um número.",
+            "INITIAL_PASSWORD_FLOW_REQUIRED": "Conclua primeiro a alteração obrigatória da senha inicial.",
+        }
+        try:
+            data = await self._inventory_request(
+                "PATCH", "/auth/change-password", auth_token,
+                json_payload={"current_password": current_password, "password": new_password,
+                              "confirm_password": confirm_password}, group_url=self.auth_group_url,
+            )
+        except XanoError as exc:
+            code = getattr(exc, "error_code", None) or _extract_xano_error_code(exc.payload)
+            # Do not retain a provider response that might echo submitted secrets.
+            exc.payload = {}
+            if code in messages:
+                raise XanoRequestError(messages[code], code, exc.status_code or 400, {}) from None
+            if isinstance(exc, XanoAuthError):
+                raise XanoAuthError("Sessão inválida. Entre novamente.", status_code=exc.status_code) from None
+            if isinstance(exc, XanoRateLimitError):
+                raise
+            if exc.status_code == 429:
+                raise XanoRequestError("Aguarde antes de tentar novamente.", "TOO_MANY_REQUESTS", 429, {}, retry_after=exc.retry_after) from None
+            if isinstance(exc, XanoConnectionError):
+                raise XanoConnectionError("Não foi possível confirmar a alteração. Tente entrar com a nova senha antes de repetir.") from None
+            if isinstance(exc, XanoPermissionError):
+                raise XanoPermissionError("O backend não autorizou a alteração de senha.", status_code=exc.status_code) from None
+            raise XanoServerError("Não foi possível confirmar a alteração da senha.", status_code=exc.status_code) from None
+        if not isinstance(data, dict) or data.get("senha_atualizada") is not True:
+            raise XanoServerError("O backend não confirmou a alteração de senha.", status_code=200)
+        return {"senha_atualizada": True}
 
     async def get_stock_summary(self, auth_token: str) -> Dict[str, int]:
         """Consulta os totais de produtos monitorados e por situaÃ§Ã£o."""
@@ -1076,6 +1274,26 @@ class XanoAuthClient:
                 invalid_item = next(item for item in items if not isinstance(item, dict))
                 raise contract_error(name, "items[]", "object", invalid_item)
 
+            if name == "compra_ja_solicitada":
+                private_fields = (
+                    "solicitacao_id", "quantidade_solicitada", "urgencia",
+                    "urgencia_solicitacao", "solicitacao_status",
+                    "data_criacao_solicitacao",
+                )
+                for item in items:
+                    # Older API versions omit the flag and keep their original shape.
+                    visibility = item.get("solicitacao_detalhes_disponiveis", True)
+                    if type(visibility) is not bool:
+                        raise contract_error(
+                            name, "solicitacao_detalhes_disponiveis", "boolean", visibility
+                        )
+                    if not visibility:
+                        for field in private_fields:
+                            if item.get(field) is not None:
+                                raise contract_error(
+                                    name, field, "null for restricted request", item[field]
+                                )
+
             paging: dict[str, int] = {}
             for field in ("curPage", "perPage", "itemsTotal"):
                 if field not in result:
@@ -1097,6 +1315,116 @@ class XanoAuthClient:
             "a_solicitar": validate_page("a_solicitar"),
             "compra_ja_solicitada": validate_page("compra_ja_solicitada"),
         }
+
+    @staticmethod
+    def _purchase_page(data: Dict[str, Any], *, page: int, per_page: int) -> Dict[str, Any]:
+        def invalid(field: str, expected: str, value: Any, *, missing: bool = False) -> XanoServerError:
+            error = XanoServerError("O Xano retornou paginação de compras inválida.", status_code=200)
+            error.contract_field = field
+            error.contract_expected = expected
+            error.contract_found_type = "missing" if missing else type(value).__name__
+            return error
+
+        if not isinstance(data, dict):
+            raise invalid("$", "object", data)
+        items = data.get("items")
+        total = data.get("itemsTotal")
+        current = data.get("curPage")
+        size = data.get("perPage")
+        if not isinstance(items, list):
+            raise invalid("items", "list", items, missing="items" not in data)
+        for field, value in (("itemsTotal", total), ("curPage", current), ("perPage", size)):
+            if type(value) is not int:
+                raise invalid(field, "integer", value, missing=field not in data)
+        if total < 0 or total < len(items):
+            raise invalid("itemsTotal", "nonnegative total >= item count", total)
+        if current != page:
+            raise invalid("curPage", "requested page", current)
+        if size != per_page or len(items) > size:
+            raise invalid("perPage", "requested page size >= item count", size)
+        return data
+
+    async def list_purchase_requests(
+        self, auth_token: str, *, page: int = 1, per_page: int = 20,
+        status: Optional[str] = None, produto_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if status:
+            params["status"] = status
+        if produto_id is not None:
+            params["produto_id"] = produto_id
+        data = await self._inventory_request(
+            "GET", "/purchase_requests", auth_token, params=params,
+            group_url=self.stock_group_url,
+        )
+        self._purchase_page(data, page=page, per_page=per_page)
+        for item in data["items"]:
+            if not isinstance(item, dict) or type(item.get("id")) is not int or item["id"] <= 0 or not isinstance(item.get("status"), str):
+                raise XanoServerError("O Xano retornou uma solicitação inválida.", status_code=200)
+        return data
+
+    async def get_purchase_request_detail(
+        self, auth_token: str, request_id: int, *, history_page: int = 1,
+        history_per_page: int = 20,
+    ) -> Dict[str, Any]:
+        if request_id <= 0:
+            raise ValueError("Identificador da solicitação inválido.")
+        data = await self._inventory_request(
+            "GET", f"/purchase_requests/by_id/{request_id}", auth_token,
+            params={"history_page": history_page, "history_per_page": history_per_page},
+            group_url=self.stock_group_url,
+        )
+        request = data.get("solicitacao")
+        product = data.get("produto")
+        def invalid(section: str, field: str, expected: str, value: Any, *, missing: bool = False) -> XanoServerError:
+            error = XanoServerError("O Xano retornou detalhes de compra inválidos.", status_code=200)
+            error.contract_section = section
+            error.contract_field = field
+            error.contract_expected = expected
+            error.contract_found_type = "missing" if missing else type(value).__name__
+            return error
+
+        if not isinstance(request, dict):
+            raise invalid("solicitacao", "$", "object", request, missing="solicitacao" not in data)
+        if type(request.get("id")) is not int or request.get("id") != request_id:
+            raise invalid("solicitacao", "id", "requested integer ID", request.get("id"), missing="id" not in request)
+        if not isinstance(request.get("status"), str):
+            raise invalid("solicitacao", "status", "string", request.get("status"), missing="status" not in request)
+        if not isinstance(product, dict):
+            raise invalid("produto", "$", "object", product, missing="produto" not in data)
+        if type(product.get("id")) is not int:
+            raise invalid("produto", "id", "integer", product.get("id"), missing="id" not in product)
+        try:
+            self._purchase_page(data.get("historico"), page=history_page, per_page=history_per_page)
+        except XanoServerError as error:
+            error.contract_section = "historico"
+            raise
+        return data
+
+    async def update_purchase_request_status(
+        self, auth_token: str, request_id: int, *, status_esperado: str,
+        novo_status: str, justificativa: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if request_id <= 0:
+            raise ValueError("Identificador da solicitação inválido.")
+        payload: Dict[str, Any] = {
+            "status_esperado": status_esperado,
+            "novo_status": novo_status,
+        }
+        if justificativa is not None:
+            payload["justificativa"] = justificativa.strip()
+        data = await self._inventory_request(
+            "PATCH", f"/purchase_requests/by_id/{request_id}/status", auth_token,
+            json_payload=payload, group_url=self.stock_group_url,
+        )
+        request = data.get("solicitacao")
+        if (
+            not isinstance(request, dict)
+            or type(request.get("id")) is not int or request["id"] != request_id
+            or request.get("status") != novo_status
+        ):
+            raise XanoServerError("O Xano não confirmou o novo status da solicitação.", status_code=200)
+        return data
 
     async def create_purchase_request(
         self,
@@ -1310,6 +1638,78 @@ class XanoAuthClient:
             raise XanoServerError("O Xano retornou usuários em formato inesperado.")
         return data
 
+    async def list_audit_logs(
+        self,
+        auth_token: str,
+        *,
+        page: int = 1,
+        per_page: int = 20,
+        date_from: Optional[int] = None,
+        date_to: Optional[int] = None,
+        actor_user_id: Optional[int] = None,
+        action_type: Optional[str] = None,
+        entity_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Consulta uma pÃ¡gina de auditoria; a autorizaÃ§Ã£o final Ã© do Xano."""
+        if page < 1 or not 1 <= per_page <= 100:
+            raise ValueError("ParÃ¢metros de paginaÃ§Ã£o invÃ¡lidos.")
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        for name, value in (
+            ("date_from", date_from),
+            ("date_to", date_to),
+            ("actor_user_id", actor_user_id),
+        ):
+            if value is not None:
+                params[name] = int(value)
+        for name, value in (("action_type", action_type), ("entity_type", entity_type)):
+            if value and value.strip():
+                params[name] = value.strip()
+
+        data = await self._inventory_request(
+            "GET",
+            "/audit_logs",
+            auth_token,
+            params=params,
+            group_url=self.stock_group_url,
+        )
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise XanoServerError("O Xano retornou auditoria em formato inesperado.", status_code=200)
+        for field in ("curPage", "perPage", "itemsTotal"):
+            value = data.get(field)
+            minimum = 0 if field == "itemsTotal" else 1
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise XanoServerError(
+                    f"O Xano retornou metadados de auditoria invÃ¡lidos ({field}).",
+                    status_code=200,
+                )
+        for item in items:
+            if not isinstance(item, dict):
+                raise XanoServerError("O Xano retornou evento de auditoria invÃ¡lido.", status_code=200)
+            if (
+                isinstance(item.get("id"), bool)
+                or not isinstance(item.get("id"), int)
+                or item.get("id") < 1
+                or isinstance(item.get("actor_user_id"), bool)
+                or not isinstance(item.get("actor_user_id"), int)
+                or item.get("actor_user_id") < 1
+                or isinstance(item.get("occurred_at"), bool)
+                or not isinstance(item.get("occurred_at"), (int, float))
+                or not isinstance(item.get("actor_name"), str)
+                or not isinstance(item.get("action_type"), str)
+                or not isinstance(item.get("entity_type"), str)
+                or not isinstance(item.get("summary"), str)
+                or item.get("changes") is not None and not isinstance(item.get("changes"), dict)
+            ):
+                raise XanoServerError("O Xano retornou campos invÃ¡lidos em um evento de auditoria.", status_code=200)
+            changes = item.get("changes")
+            item["changes_summary"] = (
+                json.dumps(changes, ensure_ascii=False, sort_keys=True)
+                if changes is not None
+                else ""
+            )
+        return data
+
     async def list_report_options(
         self, auth_token: str, kind: str, page: int = 1, per_page: int = 100
     ) -> Dict[str, Any]:
@@ -1337,6 +1737,9 @@ class XanoAuthClient:
         supplier_id: Optional[int] = None,
         data_hora: Optional[str] = None,
         observacao: Optional[str] = None,
+        purchase_request_id: Optional[int] = None,
+        chave_recebimento: Optional[str] = None,
+        unidade_medida: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Registra uma Entrada no grupo Inventory Stock usando a sessão atual."""
         payload: Dict[str, Any] = {
@@ -1350,13 +1753,31 @@ class XanoAuthClient:
             payload["data_hora"] = data_hora.strip()
         if observacao and observacao.strip():
             payload["observacao"] = observacao.strip()
-        return await self._inventory_request(
+        if purchase_request_id is not None:
+            if type(purchase_request_id) is not int or purchase_request_id <= 0 or not chave_recebimento or not chave_recebimento.strip() or not unidade_medida or not unidade_medida.strip():
+                raise ValueError("Vínculo, chave e unidade são obrigatórios para recebimento.")
+            payload.update(purchase_request_id=purchase_request_id,
+                           chave_recebimento=chave_recebimento.strip(), unidade_medida=unidade_medida.strip())
+        elif chave_recebimento is not None or unidade_medida is not None:
+            raise ValueError("Recebimento exige vínculo explícito com o pedido.")
+        result = await self._inventory_request(
             "POST",
             "/entries",
             auth_token,
             json_payload=payload,
             group_url=self.stock_group_url,
         )
+        if purchase_request_id is not None:
+            receipt = result.get("recebimento")
+            if (
+                type(result.get("movement_id")) is not int or result["movement_id"] <= 0
+                or result.get("purchase_request_id") != purchase_request_id
+                or not isinstance(receipt, dict) or receipt.get("id") != purchase_request_id
+                or receipt.get("status") not in {"recebimento_parcial", "concluida"}
+                or type(result.get("repeticao")) is not bool
+            ):
+                raise XanoServerError("Resposta de recebimento não confirmada. Preserve a mesma chave para recuperação.", status_code=200)
+        return result
 
     async def create_stock_exit(
         self,

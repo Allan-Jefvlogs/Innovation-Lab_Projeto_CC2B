@@ -5,6 +5,8 @@ from typing import Any
 
 import reflex as rx
 
+from ..components.theme import BORDER_SOFT, ERROR_TEXT, SAGE_DARK, SURFACE, SURFACE_ALT, TEXT_MUTED
+
 from ..services.xano_client import XanoAuthError, XanoError, XanoRequestError, auth_client
 from ..state import AuthState
 from ..components.layout import session_validation_panel
@@ -92,23 +94,23 @@ def _password_field(label: str, name: str, visible: Any, toggle: Any) -> rx.Comp
 def alterar_senha() -> rx.Component:
     form = rx.center(
         rx.vstack(
-            rx.heading("NexStock", size="7", color="#2563EB"),
+            rx.heading("NexStock", size="7", color=SAGE_DARK),
             rx.heading("Alteração de senha", size="6"),
-            rx.text("Por segurança, você precisa definir uma nova senha antes de continuar.", color="#64748b"),
+            rx.text("Por segurança, você precisa definir uma nova senha antes de continuar.", color=TEXT_MUTED),
             rx.form(
                 rx.vstack(
                     _password_field("Nova senha", "password", InitialPasswordState.show_password, InitialPasswordState.toggle_password),
                     _password_field("Confirmar nova senha", "confirm_password", InitialPasswordState.show_confirmation, InitialPasswordState.toggle_confirmation),
-                    rx.cond(InitialPasswordState.error_message != "", rx.text(InitialPasswordState.error_message, color="#b91c1c")),
+                    rx.cond(InitialPasswordState.error_message != "", rx.text(InitialPasswordState.error_message, color=ERROR_TEXT)),
                     rx.button("Alterar senha", type="submit", width="100%", disabled=InitialPasswordState.is_saving, loading=InitialPasswordState.is_saving),
                     width="100%", align="stretch", spacing="4",
                 ),
                 on_submit=InitialPasswordState.submit, width="100%",
             ),
             rx.button("Sair", on_click=AuthState.logout, variant="ghost"),
-            width="100%", max_width="28rem", padding="2rem", background="white",
-            border="1px solid #e2e8f0", border_radius="1rem", align="stretch", spacing="5",
+            width="100%", max_width="28rem", padding="2rem", background=SURFACE,
+            border=f"1px solid {BORDER_SOFT}", border_radius="1rem", align="stretch", spacing="5",
         ),
-        width="100%", min_height="100vh", padding="1rem", background="#f8fafc",
+        width="100%", min_height="100vh", padding="1rem", background=SURFACE_ALT,
     )
     return rx.cond(AuthState.session_is_valid, form, session_validation_panel())

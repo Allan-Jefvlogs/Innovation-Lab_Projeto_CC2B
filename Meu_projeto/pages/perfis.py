@@ -5,6 +5,8 @@ from typing import Any, TypedDict
 
 import reflex as rx
 
+from ..components.theme import BORDER_SOFT, TEXT_MUTED, WARNING_TEXT
+
 from ..components.layout import page, section
 from ..services.xano_client import (
     XanoAuthError,
@@ -20,6 +22,7 @@ from ..state import AuthState
 logger = logging.getLogger(__name__)
 
 MODULE_NAMES = {
+    "purchase_request": "Solicitações de compras",
     "category": "Categorias",
     "product": "Produtos",
     "supplier": "Fornecedores",
@@ -28,6 +31,9 @@ MODULE_NAMES = {
     "report": "Relatórios",
 }
 ACTION_NAMES = {
+    "manage": "Gerenciar solicitações",
+    "cancel": "Cancelar solicitação",
+    "status.update": "Atualizar status",
     "read": "Visualizar",
     "create": "Criar",
     "update": "Editar",
@@ -35,7 +41,7 @@ ACTION_NAMES = {
     "entry": "Registrar entrada",
     "exit": "Registrar saída",
 }
-MODULE_ORDER = ("category", "product", "supplier", "stock", "movement", "report")
+MODULE_ORDER = ("category", "product", "supplier", "stock", "movement", "report", "purchase_request")
 
 
 class PermissionItem(TypedDict):
@@ -59,6 +65,7 @@ def _permission_label(code: str, resource: str, action: str) -> str:
         "stock": "estoque",
         "movement": "histórico",
         "report": "relatórios",
+        "purchase_request": "solicitações",
     }.get(resource)
     verb = ACTION_NAMES.get(action)
     return f"{verb} {noun}" if verb and noun else code
@@ -298,15 +305,11 @@ class PermissionState(rx.State):
 
 
 def _permission_row(item: PermissionItem) -> rx.Component:
-    return rx.hstack(
-        rx.checkbox(
-            item["label"], checked=item["selected"],
-            on_change=lambda checked: PermissionState.toggle_permission(item["code"], checked),
-            disabled=~PermissionState.can_edit | PermissionState.is_saving,
-        ),
-        rx.spacer(),
-        rx.text(item["code"], size="1", color="#64748b"),
-        width="100%", align="center", spacing="3",
+    return rx.checkbox(
+        item["label"], checked=item["selected"],
+        on_change=lambda checked: PermissionState.toggle_permission(item["code"], checked),
+        disabled=~PermissionState.can_edit | PermissionState.is_saving,
+        spacing="2",
     )
 
 
@@ -317,7 +320,7 @@ def _permission_group(group: PermissionGroup) -> rx.Component:
             rx.foreach(group["permissions"], _permission_row),
             width="100%", align="stretch", spacing="3",
         ),
-        border="1px solid #e5e7eb", border_radius="0.5rem", padding="1rem", width="100%",
+        border=f"1px solid {BORDER_SOFT}", border_radius="0.5rem", padding="1rem", width="100%",
     )
 
 
@@ -326,8 +329,8 @@ def perfis() -> rx.Component:
         "Perfis e permissões",
         rx.vstack(
             rx.cond(PermissionState.error_message != "", rx.callout(PermissionState.error_message, icon="triangle_alert", color_scheme="ruby", width="100%")),
-            rx.cond(PermissionState.success_message != "", rx.callout(PermissionState.success_message, icon="circle_check", color_scheme="green", width="100%")),
-            rx.cond(PermissionState.info_message != "", rx.text(PermissionState.info_message, color="#64748b", size="2")),
+            rx.cond(PermissionState.success_message != "", rx.callout(PermissionState.success_message, icon="circle_check", color_scheme="jade", width="100%")),
+            rx.cond(PermissionState.info_message != "", rx.text(PermissionState.info_message, color=TEXT_MUTED, size="2")),
             section(
                 "Perfil selecionado",
                 rx.vstack(
@@ -345,10 +348,15 @@ def perfis() -> rx.Component:
                     ),
                     rx.cond(
                         PermissionState.selected_profile_code == "administrator",
-                        rx.text("O perfil Líder possui permissões administrativas protegidas.", color="#64748b", size="2"),
+                        rx.text("O perfil Líder possui permissões administrativas protegidas.", color=TEXT_MUTED, size="2"),
+                    ),
+                    rx.cond(
+                        PermissionState.selected_profile_code == "compras",
+                        rx.text("O perfil Compras possui somente os grants aprovados do módulo de solicitações.", color=TEXT_MUTED, size="2"),
                     ),
                     width="100%", max_width="28rem", align="stretch", spacing="3",
                 ),
+                tone="mint",
             ),
             section(
                 "Permissões",
@@ -365,11 +373,12 @@ def perfis() -> rx.Component:
                         rx.text("Nenhuma permissão disponível."),
                     ),
                 ),
+                tone="peach",
             ),
             rx.cond(
                 PermissionState.can_edit,
                 rx.hstack(
-                    rx.cond(PermissionState.is_dirty, rx.text("Alterações não salvas", color="#b45309", size="2")),
+                    rx.cond(PermissionState.is_dirty, rx.text("Alterações não salvas", color=WARNING_TEXT, size="2")),
                     rx.spacer(),
                     rx.button("Cancelar alterações", on_click=PermissionState.cancel_changes, disabled=~PermissionState.is_dirty | PermissionState.is_saving, variant="soft"),
                     rx.button("Salvar permissões", on_click=PermissionState.save_permissions, disabled=~PermissionState.is_dirty | PermissionState.is_saving, loading=PermissionState.is_saving),

@@ -2,6 +2,8 @@
 
 import reflex as rx
 
+from .theme import MINT, SAGE, SAGE_DARK, TEXT_PRIMARY
+
 
 def brand_mark(scale: float = 1.0) -> rx.Component:
     """Marca geométrica usada no Login e na navegação lateral."""
@@ -18,7 +20,7 @@ def brand_mark(scale: float = 1.0) -> rx.Component:
                 left="0",
                 width="100%",
                 height="100%",
-                background="#60A5FA",
+                background=MINT,
                 clip_path="polygon(50% 0, 100% 25%, 50% 50%, 0 25%)",
             ),
             rx.box(
@@ -27,7 +29,7 @@ def brand_mark(scale: float = 1.0) -> rx.Component:
                 left="0",
                 width="100%",
                 height="100%",
-                background="#2563EB",
+                background=SAGE,
                 clip_path="polygon(0 25%, 50% 50%, 50% 100%, 0 75%)",
             ),
             rx.box(
@@ -36,7 +38,7 @@ def brand_mark(scale: float = 1.0) -> rx.Component:
                 left="0",
                 width="100%",
                 height="100%",
-                background="#1D4ED8",
+                background=SAGE_DARK,
                 clip_path="polygon(50% 50%, 100% 25%, 100% 75%, 50% 100%)",
             ),
             position="absolute",
@@ -56,10 +58,10 @@ def brand_mark(scale: float = 1.0) -> rx.Component:
     )
 
 
-def brand_wordmark(font_size: str = "1.35rem") -> rx.Component:
+def brand_wordmark(font_size: str = "1.35rem", *, prefix: str = "Nex", color: str | None = None) -> rx.Component:
     """Wordmark NexStock com a mesma separação cromática do Login."""
     return rx.hstack(
-        rx.text("Nex", color="#0F172A", font_size=font_size, font_weight="800", line_height="1.05"),
-        rx.text("Stock", color="#2563EB", font_size=font_size, font_weight="800", line_height="1.05"),
+        rx.text(prefix, color=color or TEXT_PRIMARY, font_size=font_size, font_weight="760", line_height="1.05"),
+        rx.text("Stock", color=color or SAGE_DARK, font_size=font_size, font_weight="760", line_height="1.05"),
         spacing="0",
     )

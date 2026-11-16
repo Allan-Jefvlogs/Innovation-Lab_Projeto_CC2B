@@ -5,6 +5,8 @@ from typing import Any
 
 import reflex as rx
 
+from ..components.theme import BORDER, BORDER_SOFT, ERROR_TEXT, SUCCESS_TEXT, SURFACE, SURFACE_ALT, TABLE_HEADER, TEXT_MUTED, WARNING_TEXT
+
 from ..components.layout import page, section
 from ..components.searchable_select import normalize_search_text, searchable_select
 from ..services.xano_client import (
@@ -1393,7 +1395,7 @@ def _product_row(product: dict[str, str]) -> rx.Component:
         column_gap="4px",
         style={"grid_template_columns": PRODUCT_GRID, "align_items": "center"},
         padding="0.75rem",
-        border_bottom="1px solid #eee",
+        border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -1412,15 +1414,15 @@ def _products_table() -> rx.Component:
         column_gap="4px",
         style={"grid_template_columns": PRODUCT_GRID, "align_items": "center"},
         padding="0.75rem",
-        background="#f5f5f5",
-        border_bottom="1px solid #ddd",
+        background=TABLE_HEADER,
+        border_bottom=f"1px solid {BORDER}",
     )
     return rx.box(
         header,
         rx.vstack(rx.foreach(ProductsState.filtered_products, _product_row), width="100%", spacing="0"),
         width="100%",
         overflow_x="auto",
-        border="1px solid #ddd",
+        border=f"1px solid {BORDER}",
         border_radius="0.4rem",
     )
 
@@ -1494,10 +1496,10 @@ def _form_fields() -> rx.Component:
 
 def _feedback() -> rx.Component:
     return rx.vstack(
-        rx.cond(ProductsState.error_message != "", rx.text(ProductsState.error_message, color="#b91c1c")),
-        rx.cond(ProductsState.category_error_message != "", rx.text(ProductsState.category_error_message, color="#b91c1c")),
-        rx.cond(ProductsState.supplier_error_message != "", rx.text(ProductsState.supplier_error_message, color="#b91c1c")),
-        rx.cond(ProductsState.success_message != "", rx.text(ProductsState.success_message, color="#15803d")),
+        rx.cond(ProductsState.error_message != "", rx.text(ProductsState.error_message, color=ERROR_TEXT)),
+        rx.cond(ProductsState.category_error_message != "", rx.text(ProductsState.category_error_message, color=ERROR_TEXT)),
+        rx.cond(ProductsState.supplier_error_message != "", rx.text(ProductsState.supplier_error_message, color=ERROR_TEXT)),
+        rx.cond(ProductsState.success_message != "", rx.text(ProductsState.success_message, color=SUCCESS_TEXT)),
         width="100%",
         align="stretch",
         spacing="2",
@@ -1510,7 +1512,7 @@ def produtos() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.hstack(
-                    rx.icon(tag="search", size=18, color="#64748B"),
+                    rx.icon(tag="search", size=18, color=TEXT_MUTED),
                     rx.input(
                         value=ProductsState.search_query,
                         on_change=ProductsState.change_search_query,
@@ -1529,9 +1531,9 @@ def produtos() -> rx.Component:
                     flex_shrink="1",
                     height="40px",
                     padding_x="12px",
-                    border="1px solid #CBD5E1",
+                    border=f"1px solid {BORDER_SOFT}",
                     border_radius="8px",
-                    background="white",
+                    background=SURFACE,
                 ),
                 rx.spacer(),
                 rx.cond(
@@ -1550,7 +1552,7 @@ def produtos() -> rx.Component:
                         rx.cond(
                             ProductsState.products_stale,
                             rx.hstack(
-                                rx.text(ProductsState.products_status_message, color="#92400E"),
+                                rx.text(ProductsState.products_status_message, color=WARNING_TEXT),
                                 rx.button(
                                     "Tentar atualizar",
                                     on_click=ProductsState.refresh_products,
@@ -1594,6 +1596,7 @@ def produtos() -> rx.Component:
                         spacing="3",
                     ),
                 ),
+                tone="mint",
             ),
         ),
     )
@@ -1661,7 +1664,7 @@ def _product_form(is_edit: bool) -> rx.Component:
 def novo_produto() -> rx.Component:
     return page(
         "Novo produto",
-        section("Dados do produto", _product_form(is_edit=False)),
+        section("Dados do produto", _product_form(is_edit=False), tone="rose"),
     )
 
 
@@ -1703,5 +1706,6 @@ def editar_produto() -> rx.Component:
                 align="stretch",
                 spacing="4",
             ),
+            tone="rose",
         ),
     )

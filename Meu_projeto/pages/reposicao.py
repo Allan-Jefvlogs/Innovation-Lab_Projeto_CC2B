@@ -13,6 +13,8 @@ from typing import Any
 
 import reflex as rx
 
+from ..components.theme import ERROR_TEXT, SUCCESS_TEXT, TEXT_MUTED, WARNING_TEXT
+
 from ..components.layout import page, section
 from ..services.purchase_request_email import (
     CANCELAMENTO_DESTINATARIO,
@@ -208,13 +210,15 @@ def _map_item(item: dict[str, Any], *, requested: bool) -> dict[str, str]:
         "estoque_minimo_raw": str(item.get("estoque_minimo", "")),
     }
     if requested:
+        details_available = item.get("solicitacao_detalhes_disponiveis", True) is True
         row.update(
             {
-                "solicitacao_id": str(item.get("solicitacao_id") or ""),
-                "quantidade_solicitada": _format_quantity(item.get("quantidade_solicitada")),
-                "urgencia": str(item.get("urgencia") or item.get("urgencia_solicitacao") or "\u2014"),
-                "status": str(item.get("solicitacao_status") or "—"),
-                "data_solicitacao": _format_request_date(item.get("data_criacao_solicitacao")),
+                "detalhes_disponiveis": "true" if details_available else "false",
+                "solicitacao_id": str(item.get("solicitacao_id") or "") if details_available else "",
+                "quantidade_solicitada": _format_quantity(item.get("quantidade_solicitada")) if details_available else "—",
+                "urgencia": str(item.get("urgencia") or item.get("urgencia_solicitacao") or "\u2014") if details_available else "—",
+                "status": str(item.get("solicitacao_status") or "—") if details_available else "Detalhes restritos",
+                "data_solicitacao": _format_request_date(item.get("data_criacao_solicitacao")) if details_available else "—",
             }
         )
     return row
@@ -270,6 +274,7 @@ class ReplenishmentState(rx.State):
     cancel_attempt_ambiguous: bool = False
     cancel_retry_after_epoch: float = 0.0
     session_fingerprint_cache: str = ""
+    read_visibility_scope: str = ""
 
     @rx.var
     def cancel_justification_valid(self) -> bool:
@@ -317,9 +322,20 @@ class ReplenishmentState(rx.State):
             self.cancel_retry_after_epoch = 0.0
             self.session_fingerprint_cache = fingerprint
 
-    def _cache_key(self, token: str) -> tuple[str, str, str, str]:
+    def _set_read_visibility_scope(self, global_access: bool) -> None:
+        scope = "global" if global_access else "own"
+        if getattr(self, "read_visibility_scope", "") != scope:
+            self.requestable_products = []
+            self.requested_products = []
+            self.requestable_total = 0
+            self.requested_total = 0
+            self.data_stale = False
+            self.cancel_form_open = False
+            self.read_visibility_scope = scope
+
+    def _cache_key(self, token: str, *, global_access: bool = False) -> tuple[str, str, str, str]:
         return session_read_cache.key(
-            REPLENISHMENT_SCOPE,
+            f"{REPLENISHMENT_SCOPE}:visibility-v2:{'global' if global_access else 'own'}",
             REPLENISHMENT_ENDPOINT,
             token,
             {
@@ -364,6 +380,8 @@ class ReplenishmentState(rx.State):
 
         token = str(auth.auth_token or "").strip()
         await self._clear_for_session_change(token)
+        global_access = auth.has_permission("purchase_request.manage")
+        self._set_read_visibility_scope(global_access)
         required = auth.has_permission("stock.read") and auth.has_permission("purchase_request.read")
         self.can_create_request = required and auth.has_permission("purchase_request.create")
         self.can_cancel_requests = required and (
@@ -386,7 +404,7 @@ class ReplenishmentState(rx.State):
             return
 
         self.load_attempted = True
-        key = self._cache_key(token)
+        key = self._cache_key(token, global_access=global_access)
         cached, fresh = session_read_cache.get(key, REPLENISHMENT_CACHE_TTL, allow_stale=True)
         if fresh and not force_refresh:
             self._apply_response(cached)
@@ -853,7 +871,11 @@ class ReplenishmentState(rx.State):
             (item for item in self.requested_products if item.get("solicitacao_id") == str(request_id)),
             None,
         )
-        if not row or row.get("status") not in {"aberta", "em_analise"}:
+        if (
+            not row
+            or row.get("detalhes_disponiveis", "true") != "true"
+            or row.get("status") not in {"aberta", "em_analise"}
+        ):
             self.cancel_error_message = "O status atual não permite cancelar esta solicitação."
             return
         if not self.cancel_attempt_ambiguous:
@@ -1004,14 +1026,14 @@ def _status_panel(status: rx.Var, message: rx.Var) -> rx.Component:
         rx.center(rx.spinner(), "Carregando dados de reposição...", width="100%", padding="2rem"),
         rx.cond(
             status == "unavailable",
-            rx.text("Integração de reposição indisponível.", color="#64748b", role="status"),
+            rx.text("Integração de reposição indisponível.", color=TEXT_MUTED, role="status"),
             rx.cond(
                 status == "access_denied",
-                rx.text(message, color="#b91c1c", role="alert"),
+                rx.text(message, color=ERROR_TEXT, role="alert"),
                 rx.cond(
                     status == "error",
                     rx.hstack(
-                        rx.text(message, color="#b91c1c", role="alert"),
+                        rx.text(message, color=ERROR_TEXT, role="alert"),
                         _retry_action(),
                         width="100%",
                         align="center",
@@ -1034,7 +1056,7 @@ def _retry_action() -> rx.Component:
             disabled=ReplenishmentState.is_loading,
             size="1",
             variant="ghost",
-            color_scheme="blue",
+            color_scheme="jade",
             padding="0 6px",
             flex_shrink="0",
         ),
@@ -1065,7 +1087,7 @@ def _request_form() -> rx.Component:
                         "Unidade: ",
                         ReplenishmentState.request_product_unit,
                         size="2",
-                        color="#64748b",
+                        color=TEXT_MUTED,
                     ),
                     rx.text("Urgência"),
                     rx.select(
@@ -1089,11 +1111,11 @@ def _request_form() -> rx.Component:
                     rx.text(
                         "Se preenchido, a solicitação será enviada por e-mail ao endereço informado.",
                         size="2",
-                        color="#64748b",
+                        color=TEXT_MUTED,
                     ),
                     rx.cond(
                         ReplenishmentState.request_create_error != "",
-                        rx.text(ReplenishmentState.request_create_error, color="#b91c1c", role="alert"),
+                        rx.text(ReplenishmentState.request_create_error, color=ERROR_TEXT, role="alert"),
                         rx.fragment(),
                     ),
                     rx.hstack(
@@ -1157,7 +1179,7 @@ def _cancel_form() -> rx.Component:
                     ),
                     rx.cond(
                         ReplenishmentState.cancel_error_message != "",
-                        rx.text(ReplenishmentState.cancel_error_message, color="#b91c1c", role="alert"),
+                        rx.text(ReplenishmentState.cancel_error_message, color=ERROR_TEXT, role="alert"),
                         rx.fragment(),
                     ),
                     rx.hstack(
@@ -1243,14 +1265,14 @@ def _requestable_content() -> rx.Component:
                     width="100%",
                     variant="surface",
                 ),
-                rx.text("Nenhum produto precisa de reposição.", color="#64748b"),
+                rx.text("Nenhum produto precisa de reposição.", color=TEXT_MUTED),
             ),
             rx.fragment(),
         ),
         rx.cond(
             ReplenishmentState.data_stale,
             rx.hstack(
-                rx.text("Dados temporariamente não atualizados; ações estão bloqueadas.", color="#a16207", size="2"),
+                rx.text("Dados temporariamente não atualizados; ações estão bloqueadas.", color=WARNING_TEXT, size="2"),
                 _retry_action(),
                 spacing="2",
                 align="center",
@@ -1329,6 +1351,7 @@ def _requested_content() -> rx.Component:
                                 rx.table.cell(
                                     rx.cond(
                                         ReplenishmentState.can_cancel_requests
+                                        & (row["detalhes_disponiveis"] == "true")
                                         & ((row["status"] == "aberta") | (row["status"] == "em_analise")),
                                         rx.button(
                                             "Cancelar solicitação",
@@ -1344,14 +1367,14 @@ def _requested_content() -> rx.Component:
                     width="100%",
                     variant="surface",
                 ),
-                rx.text("Nenhuma solicitação ativa encontrada.", color="#64748b"),
+                rx.text("Nenhuma solicitação ativa encontrada.", color=TEXT_MUTED),
             ),
             rx.fragment(),
         ),
         rx.cond(
             ReplenishmentState.data_stale,
             rx.hstack(
-                rx.text("Dados temporariamente não atualizados.", color="#a16207", size="2"),
+                rx.text("Dados temporariamente não atualizados.", color=WARNING_TEXT, size="2"),
                 _retry_action(),
                 spacing="2",
                 align="center",
@@ -1394,17 +1417,17 @@ def reposicao() -> rx.Component:
         rx.vstack(
             rx.cond(
                 ReplenishmentState.request_success_message != "",
-                rx.text(ReplenishmentState.request_success_message, color="#166534", role="status"),
+                rx.text(ReplenishmentState.request_success_message, color=SUCCESS_TEXT, role="status"),
                 rx.fragment(),
             ),
             rx.cond(
                 ReplenishmentState.cancel_success_message != "",
-                rx.text(ReplenishmentState.cancel_success_message, color="#166534", role="status"),
+                rx.text(ReplenishmentState.cancel_success_message, color=SUCCESS_TEXT, role="status"),
                 rx.fragment(),
             ),
             rx.text(
                 "Gerencie produtos com estoque insuficiente e acompanhe solicitações de compras.",
-                color="#64748b",
+                color=TEXT_MUTED,
             ),
             rx.hstack(
                 rx.button(
@@ -1422,8 +1445,8 @@ def reposicao() -> rx.Component:
             ),
             rx.cond(
                 ReplenishmentState.active_tab == "to_request",
-                section("A solicitar", _requestable_content()),
-                section("Compra já solicitada", _requested_content()),
+                section("A solicitar", _requestable_content(), tone="peach"),
+                section("Compra já solicitada", _requested_content(), tone="rose"),
             ),
             _request_form(),
             _cancel_form(),

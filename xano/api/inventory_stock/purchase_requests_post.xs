@@ -205,6 +205,7 @@ query "purchase_requests" verb=POST {
                             produto_id: $product.id,
                             quantidade_solicitada: $input.quantidade_solicitada,
                             quantidade_recebida: 0,
+                            unidade_medida_solicitada: $product.unidade_medida,
                             urgencia: $input.urgencia,
                             email_destinatario: $input.email_destinatario,
                             solicitante_usuario_id: $auth.id,
@@ -351,11 +352,9 @@ query "purchase_requests" verb=POST {
       error = "PRODUCT_INACTIVE"
     }
     precondition ($creation_error != "STOCK_BALANCE_NOT_FOUND") {
-      error_type = "standard"
       error = "STOCK_BALANCE_NOT_FOUND"
     }
     precondition ($creation_error != "STOCK_BALANCE_INVALID") {
-      error_type = "standard"
       error = "STOCK_BALANCE_INVALID"
     }
     precondition ($creation_error != "PRODUCT_STOCK_NOT_INSUFFICIENT") {
@@ -371,7 +370,6 @@ query "purchase_requests" verb=POST {
       error = "IDEMPOTENCY_KEY_REUSED"
     }
     precondition ($creation_error != "PURCHASE_REQUEST_CREATE_FAILED") {
-      error_type = "standard"
       error = "PURCHASE_REQUEST_CREATE_FAILED"
     }
   }

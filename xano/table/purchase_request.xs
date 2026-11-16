@@ -7,7 +7,8 @@ table "purchase_request" {
       table = "product"
     }
     decimal quantidade_solicitada filters=min:0
-    decimal quantidade_recebida?=0 filters=min:0
+    decimal quantidade_recebida? filters=min:0
+    text? unidade_medida_solicitada?
     enum urgencia?="normal" {
       values = ["baixa", "normal", "alta", "critica"]
     }
@@ -20,7 +21,9 @@ table "purchase_request" {
     enum email_status?="pendente" {
       values = ["pendente", "enviado", "falhou"]
     }
-    text? email_destinatario?
+    text? email_destinatario? filters=trim {
+      visibility = "internal"
+    }
     text chave_idempotencia
     int? active_product_id? {
       table = "product"

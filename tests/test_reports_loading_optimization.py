@@ -23,7 +23,7 @@ from Meu_projeto.services.session_read_cache import CACHE_MISS
 
 def _state() -> ReportState:
     state = object.__new__(ReportState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     values = {
         "movements": [],
         "is_loading": False,

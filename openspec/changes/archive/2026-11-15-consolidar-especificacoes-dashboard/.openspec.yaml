@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-14
+goal: Criar deltas coesos para Dashboard e troca voluntária de senha sem alterar
+  código nem specs oficiais nesta etapa.

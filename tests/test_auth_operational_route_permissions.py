@@ -18,7 +18,8 @@ def _auth_state(
     permissions: list[str], *, profile_id: int = 3, profile_code: str = "read_only"
 ) -> AuthState:
     state = object.__new__(AuthState)
-    object.__setattr__(state, "dirty_vars", set())
+    # Keep this fixture compatible with Reflex State's bookkeeping contract.
+    AuthState._init_bookkeeping(state)
     for name, value in {
         "auth_token": "mock-token",
         "user_id": 42,
@@ -44,7 +45,7 @@ def _auth_state(
 def _products_state(**values) -> ProductsState:
     products_module._cache_clear()
     state = object.__new__(ProductsState)
-    object.__setattr__(state, "dirty_vars", set())
+    state._init_bookkeeping()
     defaults = {
         "is_loading": False,
         "is_saving": False,
@@ -107,8 +108,9 @@ class OperationalRoutePermissionTests(unittest.TestCase):
         leader = _auth_state([], profile_id=1, profile_code="administrator")
         self.assertTrue(leader.is_administrator)
 
-    def test_history_and_report_routes_use_independent_grants(self) -> None:
-        self.assertEqual(_required_route_permission("/movimentacoes"), "movement.read")
+    def test_audit_and_report_routes_use_independent_grants(self) -> None:
+        self.assertEqual(_required_route_permission("/auditoria"), "administrator")
+        self.assertIsNone(_required_route_permission("/movimentacoes"))
         self.assertEqual(_required_route_permission("/relatorios"), "report.read")
         self.assertTrue(_auth_state(["movement.read"]).has_permission("movement.read"))
         self.assertFalse(_auth_state(["report.read"]).has_permission("movement.read"))
@@ -128,8 +130,10 @@ class OperationalRoutePermissionTests(unittest.TestCase):
         ))
 
     def test_xano_history_endpoint_contracts_remain_distinct(self) -> None:
+        client_source = Path("Meu_projeto/services/xano_client.py").read_text(encoding="utf-8")
         movements_script = Path("xano/api/inventory_stock/movements_get.xs").read_text(encoding="utf-8")
         users_script = Path("xano/api/inventory_stock/movement_users_get.xs").read_text(encoding="utf-8")
+        self.assertIn('"/movements"', client_source)
         self.assertIn('permission_code: "movement.read"', movements_script)
         self.assertIn('alternate_permission_code: "report.read"', movements_script)
         self.assertIn('permission_code: "movement.read"', users_script)
@@ -189,7 +193,8 @@ class CanonicalAdministratorTests(unittest.TestCase):
 class HistoryPermissionMockTests(unittest.IsolatedAsyncioTestCase):
     async def test_movement_users_permission_denial_is_handled_without_exposing_users(self) -> None:
         state = object.__new__(MovementHistoryState)
-        object.__setattr__(state, "dirty_vars", set())
+        state._init_bookkeeping()
+
         state.user_filter_error = ""
         state.user_options = []
         state.user_page = 1

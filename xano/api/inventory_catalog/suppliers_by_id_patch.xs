@@ -32,6 +32,7 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
       error_type = "inputerror"
       error = "INVALID_INPUT"
     }
+
     precondition ($input.documento == null || $input.documento != "") {
       error_type = "inputerror"
       error = "INVALID_INPUT"
@@ -41,6 +42,7 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
       error_type = "inputerror"
       error = "INVALID_INPUT"
     }
+
     precondition (!($input.endereco != null && $input.limpar_endereco == true)) {
       error_type = "inputerror"
       error = "INVALID_INPUT"
@@ -52,18 +54,25 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
 
     conditional {
       if ($input.nome_razao_social != null) {
-        var.update $updates.nome_razao_social {value = $input.nome_razao_social}
+        var.update $updates.nome_razao_social {
+          value = $input.nome_razao_social
+        }
       }
     }
+
     conditional {
       if ($input.tipo_documento != null) {
         precondition ($input.tipo_documento == "CPF" || $input.tipo_documento == "CNPJ") {
           error_type = "inputerror"
           error = "INVALID_INPUT"
         }
-        var.update $updates.tipo_documento {value = $input.tipo_documento}
+
+        var.update $updates.tipo_documento {
+          value = $input.tipo_documento
+        }
       }
     }
+
     conditional {
       if ($input.documento != null) {
         db.query supplier {
@@ -76,27 +85,41 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
           error = "DUPLICATE_VALUE"
         }
 
-        var.update $updates.documento {value = $input.documento}
+        var.update $updates.documento {
+          value = $input.documento
+        }
       }
     }
+
     conditional {
       if ($input.contato != null) {
-        var.update $updates.contato {value = $input.contato}
+        var.update $updates.contato {
+          value = $input.contato
+        }
       }
     }
+
     conditional {
       if ($input.limpar_contato == true) {
-        var.update $updates.contato {value = null}
+        var.update $updates.contato {
+          value = null
+        }
       }
     }
+
     conditional {
       if ($input.endereco != null) {
-        var.update $updates.endereco {value = $input.endereco}
+        var.update $updates.endereco {
+          value = $input.endereco
+        }
       }
     }
+
     conditional {
       if ($input.limpar_endereco == true) {
-        var.update $updates.endereco {value = null}
+        var.update $updates.endereco {
+          value = null
+        }
       }
     }
 
@@ -105,43 +128,76 @@ query "suppliers/by_id/{supplier_id}" verb=PATCH {
       error = "INVALID_INPUT"
     }
 
-    try_catch {
-      try {
-        db.patch supplier {
-          field_name = "id"
-          field_value = $input.supplier_id
-          data = $updates
-        } as $supplier
-      }
-      catch {
-        conditional {
-          if ($input.documento != null) {
-            db.query supplier {
-              where = $db.supplier.documento == $input.documento && $db.supplier.id != $input.supplier_id
-              return = {type: "exists"}
-            } as $duplicate_after_write
+    db.transaction {
+      stack {
+        try_catch {
+          try {
+            db.patch supplier {
+              field_name = "id"
+              field_value = $input.supplier_id
+              data = $updates
+            } as $supplier
           }
-          else {
-            var $duplicate_after_write {
-              value = false
+          catch {
+            conditional {
+              if ($input.documento != null) {
+                db.query supplier {
+                  where = $db.supplier.documento == $input.documento && $db.supplier.id != $input.supplier_id
+                  return = {type: "exists"}
+                } as $duplicate_after_write
+              }
+              else {
+                var $duplicate_after_write {
+                  value = false
+                }
+              }
+            }
+
+            conditional {
+              if ($duplicate_after_write) {
+                throw {
+                  name = "DUPLICATE_VALUE"
+                  value = "DUPLICATE_VALUE"
+                }
+              }
+              else {
+                throw {
+                  name = "SUPPLIER_UPDATE_FAILED"
+                  value = $error.message
+                }
+              }
             }
           }
         }
 
-        conditional {
-          if ($duplicate_after_write) {
-            throw {
-              name = "DUPLICATE_VALUE"
-              value = "DUPLICATE_VALUE"
-            }
-          }
-          else {
-            throw {
-              name = "SUPPLIER_UPDATE_FAILED"
-              value = $error.message
-            }
-          }
+        db.get "user" {
+          field_name = "id"
+          field_value = $auth.id
+          output = ["id", "name"]
+        } as $audit_actor
+
+        precondition ($audit_actor != null) {
+          error_type = "accessdenied"
+          error = "AUDIT_ACTOR_NOT_FOUND"
         }
+
+        db.add inventory_audit_log {
+          data = {
+            actor_user_id: $audit_actor.id,
+            actor_name: $audit_actor.name,
+            action_type: "atualizado",
+            entity_type: "fornecedor",
+            entity_id: $supplier.id,
+            summary: "Cadastro de fornecedor atualizado; valores pessoais e de contato foram omitidos do evento.",
+            changes: {
+              nome_razao_social: $input.nome_razao_social != null && $input.nome_razao_social != $existing.nome_razao_social,
+              tipo_documento: $input.tipo_documento != null && $input.tipo_documento != $existing.tipo_documento,
+              documento: $input.documento != null && $input.documento != $existing.documento,
+              contato: ($input.contato != null && $input.contato != $existing.contato) || ($input.limpar_contato == true && $existing.contato != null),
+              endereco: ($input.endereco != null && $input.endereco != $existing.endereco) || ($input.limpar_endereco == true && $existing.endereco != null)
+            }
+          }
+        } as $audit_event
       }
     }
   }

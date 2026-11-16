@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation
 
 import reflex as rx
 
+from ..components.theme import BORDER, BORDER_SOFT, ERROR_TEXT, MINT_SOFT, PEACH_SOFT, ROSE_SOFT, ROSE_TEXT, SUCCESS_TEXT, SURFACE, SURFACE_ALT, TABLE_HEADER, TEXT_MUTED, TEXT_PRIMARY, WARNING_TEXT
+
 from ..components.layout import page, section
 from ..services.xano_client import (
     XanoAuthError,
@@ -170,17 +172,17 @@ class StockState(rx.State):
 def _stock_status_badge(row: dict[str, str]) -> rx.Component:
     color = rx.match(
         row["situacao"],
-        ("normal", "#15803d"),
-        ("abaixo_minimo", "#b45309"),
-        ("sem_estoque", "#b91c1c"),
-        "#64748b",
+        ("normal", SUCCESS_TEXT),
+        ("abaixo_minimo", WARNING_TEXT),
+        ("sem_estoque", ROSE_TEXT),
+        TEXT_MUTED,
     )
     background = rx.match(
         row["situacao"],
-        ("normal", "#dcfce7"),
-        ("abaixo_minimo", "#fef3c7"),
-        ("sem_estoque", "#fee2e2"),
-        "#f1f5f9",
+        ("normal", MINT_SOFT),
+        ("abaixo_minimo", PEACH_SOFT),
+        ("sem_estoque", ROSE_SOFT),
+        SURFACE_ALT,
     )
     return rx.badge(row["situacao_label"], color=color, background=background)
 
@@ -202,7 +204,7 @@ def _stock_row(row: dict[str, str]) -> rx.Component:
         column_gap="12px",
         style={"grid_template_columns": STOCK_GRID, "align_items": "center"},
         padding_y="0.8rem",
-        border_bottom="1px solid #eee",
+        border_bottom=f"1px solid {BORDER_SOFT}",
     )
 
 
@@ -217,15 +219,15 @@ def _stock_table() -> rx.Component:
         column_gap="12px",
         style={"grid_template_columns": STOCK_GRID, "align_items": "center"},
         padding_y="0.8rem",
-        background="#f5f5f5",
-        border_bottom="1px solid #ddd",
+        background=TABLE_HEADER,
+        border_bottom=f"1px solid {BORDER}",
     )
     return rx.box(
         header,
         rx.vstack(rx.foreach(StockState.rows, _stock_row), width="100%", spacing="0"),
         width="100%",
         overflow_x="auto",
-        border="1px solid #ddd",
+        border=f"1px solid {BORDER}",
         border_radius="0.4rem",
     )
 
@@ -234,14 +236,19 @@ def _status_card(title: str, count: rx.Var, situation: str, color: str) -> rx.Co
     is_selected = StockState.selected_situation == situation
     return rx.box(
         rx.vstack(
-            rx.text(title, color="#666", size="2"),
+            rx.text(title, color=TEXT_MUTED, size="2"),
             rx.heading(count, size="7", color=color),
             align="start",
             spacing="1",
         ),
-        border=rx.cond(is_selected, "2px solid", "1px solid #ddd"),
-        border_color=rx.cond(is_selected, color, "#ddd"),
-        background=rx.cond(is_selected, "#f8fafc", "white"),
+        border=rx.cond(is_selected, "2px solid", f"1px solid {BORDER}"),
+        border_color=rx.cond(is_selected, color, BORDER),
+        background=rx.match(
+            situation,
+            ("abaixo_minimo", PEACH_SOFT),
+            ("sem_estoque", ROSE_SOFT),
+            MINT_SOFT,
+        ),
         border_radius="0.5rem",
         padding="1.25rem",
         flex="1",
@@ -271,9 +278,9 @@ def estoque() -> rx.Component:
         "Estoque",
         rx.vstack(
             rx.hstack(
-                _status_card("Produtos cadastrados", StockState.summary_total, "", "#1f2937"),
-                _status_card("Abaixo do mínimo", StockState.summary_below_minimum, "abaixo_minimo", "#b45309"),
-                _status_card("Sem estoque", StockState.summary_no_stock, "sem_estoque", "#b91c1c"),
+                _status_card("Produtos cadastrados", StockState.summary_total, "", TEXT_PRIMARY),
+                _status_card("Abaixo do mínimo", StockState.summary_below_minimum, "abaixo_minimo", WARNING_TEXT),
+                _status_card("Sem estoque", StockState.summary_no_stock, "sem_estoque", ROSE_TEXT),
                 width="100%",
                 wrap="wrap",
                 spacing="4",
@@ -300,11 +307,11 @@ def estoque() -> rx.Component:
                         rx.center(rx.spinner(), "Carregando estoque...", width="100%", padding="2rem"),
                         rx.cond(
                             StockState.error_message != "",
-                            rx.text(StockState.error_message, color="#b91c1c"),
+                            rx.text(StockState.error_message, color=ERROR_TEXT),
                             rx.cond(
                                 StockState.rows.length() > 0,
                                 _stock_table(),
-                                rx.text("Nenhum produto encontrado.", color="#64748b", padding="1rem"),
+                                rx.text("Nenhum produto encontrado.", color=TEXT_MUTED, padding="1rem"),
                             ),
                         ),
                     ),
@@ -312,6 +319,7 @@ def estoque() -> rx.Component:
                     align="stretch",
                     spacing="3",
                 ),
+                tone="mint",
             ),
             _pagination(),
             width="100%",

@@ -21,11 +21,38 @@ query "suppliers/by_id/{supplier_id}/inactivate" verb=PATCH {
       error = "NOT_FOUND"
     }
 
-    db.edit supplier {
-      field_name = "id"
-      field_value = $input.supplier_id
-      data = {status: "inativo"}
-    } as $supplier
+    db.transaction {
+      stack {
+        db.edit supplier {
+          field_name = "id"
+          field_value = $input.supplier_id
+          data = {status: "inativo"}
+        } as $supplier
+
+        db.get "user" {
+          field_name = "id"
+          field_value = $auth.id
+          output = ["id", "name"]
+        } as $audit_actor
+
+        precondition ($audit_actor != null) {
+          error_type = "accessdenied"
+          error = "AUDIT_ACTOR_NOT_FOUND"
+        }
+
+        db.add inventory_audit_log {
+          data = {
+            actor_user_id: $audit_actor.id,
+            actor_name: $audit_actor.name,
+            action_type: "inativado",
+            entity_type: "fornecedor",
+            entity_id: $supplier.id,
+            summary: "Fornecedor desativado.",
+            changes: {before: {status: $existing.status}, after: {status: $supplier.status}}
+          }
+        } as $audit_event
+      }
+    }
   }
 
   response = $supplier

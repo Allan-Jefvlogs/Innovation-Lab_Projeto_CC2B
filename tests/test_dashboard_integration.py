@@ -32,7 +32,7 @@ ALL_GRANTS = {"products": True, "stock": True, "movements": True, "purchase_requ
 
 def _state(token: str = "dashboard-session", grants=None) -> DashboardState:
     state = object.__new__(DashboardState)
-    object.__setattr__(state, "dirty_vars", set())
+    DashboardState._init_bookkeeping(state)
     for name, value in {
         "is_loading": False,
         "has_loaded": False,
@@ -53,6 +53,10 @@ def _state(token: str = "dashboard-session", grants=None) -> DashboardState:
         "recent_movements": [],
         "movements_error": "",
         "movements_stale": False,
+        "chart_data": [],
+        "chart_error": "",
+        "chart_enabled": dashboard_module.REAL_DASHBOARD_MOVEMENTS_ENABLED,
+        "_auth_user_name": "Usuário de teste",
         "purchase_requests_accessible": False,
         "purchase_requests_count": None,
         "purchase_requests_error": "",
@@ -171,6 +175,7 @@ class DashboardIntegrationTests(unittest.IsolatedAsyncioTestCase):
         auth_state = SimpleNamespace(
             require_auth=AsyncMock(return_value=None),
             session_is_valid=True,
+            user_name="Usuário de teste",
         )
         with (
             patch.object(DashboardState, "get_state", new_callable=AsyncMock, return_value=auth_state),
@@ -389,7 +394,7 @@ class DashboardIntegrationTests(unittest.IsolatedAsyncioTestCase):
         values = {"tipo": "Entrada", "produto": "Produto exemplo", "quantidade": "8,75", "data": "12/10/2026 19:33", "usuario": "Operador"}
         header = dashboard_module._movement_header()
         row = dashboard_module._movement_row(values)
-        table_source = inspect.getsource(dashboard_module.dashboard)
+        table_source = inspect.getsource(dashboard_module._recent_movements_panel)
 
         self.assertEqual(header.display, "grid")
         self.assertEqual(row.display, "grid")
@@ -434,12 +439,60 @@ class DashboardIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         purchase_card = dashboard_module._purchase_requests_card()
 
-        self.assertEqual(metric_card.padding, "20px")
-        self.assertEqual(purchase_card.padding, "20px")
-        self.assertEqual(dashboard_source.count('gap="16px"'), 2)
-        self.assertIn('margin_bottom="4px"', dashboard_source)
-        self.assertIn('spacing="4"', dashboard_source)
-        self.assertIn('padding="1.25rem"', inspect.getsource(layout.section))
+        self.assertEqual(metric_card.padding, "17px 18px")
+        self.assertEqual(purchase_card.padding, "17px 18px")
+        self.assertEqual(dashboard_module.DASHBOARD_GAP, "17px")
+        self.assertEqual(dashboard_source.count('gap=DASHBOARD_GAP'), 2)
+        self.assertIn('repeat(3, minmax(0, 1fr))', dashboard_source)
+        self.assertIn('gap="18px"', dashboard_source)
+
+    def test_chart_has_a_real_positive_height_in_generated_component(self):
+        from Meu_projeto.components.stock_movement_chart import stock_movement_chart
+
+        points = [
+            {"dia": f"{day:02d}/11", "entradas": 0, "saidas": 0}
+            for day in range(1, 8)
+        ]
+        component = stock_movement_chart(points)
+        generated = str(component)
+        self.assertIn('height:228', generated)
+        self.assertIn('dataKey:"entradas"', generated)
+        self.assertIn('dataKey:"saidas"', generated)
+        self.assertNotIn("Dados ilustrativos", generated)
+
+    def test_sidebar_responsive_dimensions_compile_to_media_queries(self):
+        sidebar = layout.sidebar()
+        generated_css = str(sidebar.render())
+        self.assertIn("@media screen and (min-width: 1051px)", generated_css)
+        self.assertIn("252px", generated_css)
+        self.assertNotIn('"initial"', generated_css)
+        self.assertNotIn('"lg"', generated_css)
+
+    def test_stock_alert_ratio_handles_zero_minimum_and_fractional_balances(self):
+        import json
+        import subprocess
+
+        cases = [
+            ("0", "0", [False, 0]),
+            ("0", "10", [True, 0]),
+            ("2,5", "10", [True, 25]),
+            ("—", "10", [False, 0]),
+            ("12", "10", [True, 100]),
+        ]
+        expressions = []
+        for current, minimum, _ in cases:
+            visible, percentage = dashboard_module._stock_alert_progress(current, minimum)
+            expressions.append([str(visible), str(percentage)])
+        # The inputs to Reflex's pyAnd helper are booleans in these expressions.
+        # Evaluate the generated arithmetic with that boolean helper, without DOM/network.
+        result = subprocess.run(
+            ["node", "-e", "const pyAnd=(a,b)=>a?b():a;let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(input).map(pair=>pair.map(expression=>eval(expression))))));"],
+            input=json.dumps(expressions),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(json.loads(result.stdout), [expected for _, _, expected in cases])
 
 
 class DashboardPurchaseRequestSummaryTests(unittest.IsolatedAsyncioTestCase):
@@ -572,7 +625,7 @@ class DashboardPurchaseRequestSummaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_administrator_bypass_is_respected_by_dashboard_grant_resolution(self):
         admin = object.__new__(AuthState)
-        object.__setattr__(admin, "dirty_vars", set())
+        AuthState._init_bookkeeping(admin)
         for name, value in {
             "auth_token": "admin-session",
             "inventory_profile_code": "administrator",

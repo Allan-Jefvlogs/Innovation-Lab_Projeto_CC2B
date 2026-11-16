@@ -34,10 +34,12 @@ query "products/by_id/{product_id}" verb=PATCH {
       error_type = "inputerror"
       error = "INVALID_INPUT"
     }
+
     precondition (!($input.fornecedor_padrao_id != null && $input.limpar_fornecedor_padrao == true)) {
       error_type = "inputerror"
       error = "INVALID_INPUT"
     }
+
     precondition (!($input.limpar_fornecedor_padrao == true && $existing.fornecedor_padrao_id == null)) {
       error_type = "inputerror"
       error = "INVALID_INPUT"
@@ -59,25 +61,33 @@ query "products/by_id/{product_id}" verb=PATCH {
           error = "DUPLICATE_VALUE"
         }
 
-        var.update $updates.codigo {value = $input.codigo}
+        var.update $updates.codigo {
+          value = $input.codigo
+        }
       }
     }
 
     conditional {
       if ($input.nome != null) {
-        var.update $updates.nome {value = $input.nome}
+        var.update $updates.nome {
+          value = $input.nome
+        }
       }
     }
 
     conditional {
       if ($input.descricao != null) {
-        var.update $updates.descricao {value = $input.descricao}
+        var.update $updates.descricao {
+          value = $input.descricao
+        }
       }
     }
 
     conditional {
       if ($input.limpar_descricao == true) {
-        var.update $updates.descricao {value = null}
+        var.update $updates.descricao {
+          value = null
+        }
       }
     }
 
@@ -96,7 +106,10 @@ query "products/by_id/{product_id}" verb=PATCH {
             }
           }
         }
-        var.update $updates.categoria_id {value = $input.categoria_id}
+
+        var.update $updates.categoria_id {
+          value = $input.categoria_id
+        }
       }
     }
 
@@ -113,7 +126,10 @@ query "products/by_id/{product_id}" verb=PATCH {
               error_type = "inputerror"
               error = "BUSINESS_RULE_VIOLATION"
             }
-            var.update $updates.fornecedor_padrao_id {value = $input.fornecedor_padrao_id}
+
+            var.update $updates.fornecedor_padrao_id {
+              value = $input.fornecedor_padrao_id
+            }
           }
         }
       }
@@ -121,19 +137,25 @@ query "products/by_id/{product_id}" verb=PATCH {
 
     conditional {
       if ($input.limpar_fornecedor_padrao == true) {
-        var.update $updates.fornecedor_padrao_id {value = null}
+        var.update $updates.fornecedor_padrao_id {
+          value = null
+        }
       }
     }
 
     conditional {
       if ($input.unidade_medida != null) {
-        var.update $updates.unidade_medida {value = $input.unidade_medida}
+        var.update $updates.unidade_medida {
+          value = $input.unidade_medida
+        }
       }
     }
 
     conditional {
       if ($input.estoque_minimo != null) {
-        var.update $updates.estoque_minimo {value = $input.estoque_minimo}
+        var.update $updates.estoque_minimo {
+          value = $input.estoque_minimo
+        }
       }
     }
 
@@ -142,43 +164,89 @@ query "products/by_id/{product_id}" verb=PATCH {
       error = "INVALID_INPUT"
     }
 
-    try_catch {
-      try {
-        db.patch product {
-          field_name = "id"
-          field_value = $input.product_id
-          data = $updates
-        } as $product
-      }
-      catch {
-        conditional {
-          if ($input.codigo != null) {
-            db.query product {
-              where = $db.product.codigo == $input.codigo && $db.product.id != $input.product_id
-              return = {type: "exists"}
-            } as $duplicate_after_write
+    db.transaction {
+      stack {
+        try_catch {
+          try {
+            db.patch product {
+              field_name = "id"
+              field_value = $input.product_id
+              data = $updates
+            } as $product
           }
-          else {
-            var $duplicate_after_write {
-              value = false
+          catch {
+            conditional {
+              if ($input.codigo != null) {
+                db.query product {
+                  where = $db.product.codigo == $input.codigo && $db.product.id != $input.product_id
+                  return = {type: "exists"}
+                } as $duplicate_after_write
+              }
+              else {
+                var $duplicate_after_write {
+                  value = false
+                }
+              }
+            }
+
+            conditional {
+              if ($duplicate_after_write) {
+                throw {
+                  name = "DUPLICATE_VALUE"
+                  value = "DUPLICATE_VALUE"
+                }
+              }
+              else {
+                throw {
+                  name = "PRODUCT_UPDATE_FAILED"
+                  value = $error.message
+                }
+              }
             }
           }
         }
 
-        conditional {
-          if ($duplicate_after_write) {
-            throw {
-              name = "DUPLICATE_VALUE"
-              value = "DUPLICATE_VALUE"
-            }
-          }
-          else {
-            throw {
-              name = "PRODUCT_UPDATE_FAILED"
-              value = $error.message
-            }
-          }
+        db.get "user" {
+          field_name = "id"
+          field_value = $auth.id
+          output = ["id", "name"]
+        } as $audit_actor
+
+        precondition ($audit_actor != null) {
+          error_type = "accessdenied"
+          error = "AUDIT_ACTOR_NOT_FOUND"
         }
+
+        db.add inventory_audit_log {
+          data = {
+            actor_user_id: $audit_actor.id,
+            actor_name: $audit_actor.name,
+            action_type: "atualizado",
+            entity_type: "produto",
+            entity_id: $product.id,
+            summary: "Produto atualizado.",
+            changes: {
+              before: {
+                codigo: $existing.codigo,
+                nome: $existing.nome,
+                descricao: $existing.descricao,
+                categoria_id: $existing.categoria_id,
+                fornecedor_padrao_id: $existing.fornecedor_padrao_id,
+                unidade_medida: $existing.unidade_medida,
+                estoque_minimo: $existing.estoque_minimo
+              },
+              after: {
+                codigo: $product.codigo,
+                nome: $product.nome,
+                descricao: $product.descricao,
+                categoria_id: $product.categoria_id,
+                fornecedor_padrao_id: $product.fornecedor_padrao_id,
+                unidade_medida: $product.unidade_medida,
+                estoque_minimo: $product.estoque_minimo
+              }
+            }
+          }
+        } as $audit_event
       }
     }
   }

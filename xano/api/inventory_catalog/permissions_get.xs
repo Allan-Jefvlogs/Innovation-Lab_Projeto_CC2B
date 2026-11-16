@@ -40,6 +40,10 @@ query "permissions" verb=GET {
       value = []
     }
 
+    var $purchase_permissions {
+      value = []
+    }
+
     var $permission_matrix {
       value = []
     }
@@ -80,6 +84,11 @@ query "permissions" verb=GET {
               value = $grant_item.permission_code
             }
         } break
+          case ("compras") {
+            array.push $purchase_permissions {
+              value = $grant_item.permission_code
+            }
+          } break
       }
     }
     }
@@ -90,6 +99,10 @@ query "permissions" verb=GET {
 
     var $read_only_profile {
       value = $profiles|find:$$.code=="read_only"
+    }
+
+    var $purchase_profile {
+      value = $profiles|find:$$.code=="compras"
     }
 
     var.update $permission_matrix {
@@ -111,6 +124,18 @@ query "permissions" verb=GET {
           permission_revision: $read_only_profile.permission_revision
         }
       ]
+    }
+    conditional {
+      if ($purchase_profile != null) {
+        array.push $permission_matrix {
+          value = {
+            profile_code: "compras",
+            permissions: $purchase_permissions,
+            permission_revision: $purchase_profile.permission_revision,
+            editable: false
+          }
+        }
+      }
     }
   }
 

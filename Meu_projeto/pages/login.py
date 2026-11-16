@@ -1,6 +1,8 @@
 """Página de Login integrada com autenticação real do Xano."""
 
 import reflex as rx
+
+from ..components.theme import BORDER_SOFT, MINT_SOFT, SAGE, SAGE_DARK, SURFACE, SURFACE_ALT, TEXT_MUTED, TEXT_PRIMARY
 from ..components.brand import brand_mark, brand_wordmark
 from ..state.auth import AuthState
 
@@ -41,7 +43,7 @@ def login() -> rx.Component:
             width="390px",
             height="390px",
             border_radius="72px",
-            background="#EAF2FF",
+            background=MINT_SOFT,
             opacity="0.8",
             transform="rotate(45deg)",
             pointer_events="none",
@@ -53,7 +55,7 @@ def login() -> rx.Component:
             width="420px",
             height="420px",
             border_radius="76px",
-            background="#EAF2FF",
+            background=MINT_SOFT,
             opacity="0.82",
             transform="rotate(45deg)",
             pointer_events="none",
@@ -66,7 +68,7 @@ def login() -> rx.Component:
                         brand_wordmark("clamp(2.1rem, 5vw, 2.75rem)"),
                         rx.text(
                             "Gest\u00e3o inteligente de estoque",
-                            color="#64748B",
+                            color=TEXT_MUTED,
                             font_size="clamp(0.9rem, 2.5vw, 1.1rem)",
                         ),
                         align="start",
@@ -83,7 +85,7 @@ def login() -> rx.Component:
                             rx.heading(
                                 "Login",
                                 size="6",
-                                color="#0F172A",
+                                color=TEXT_PRIMARY,
                                 text_align="center",
                             ),
                             align="center",
@@ -103,7 +105,7 @@ def login() -> rx.Component:
                         ),
                         rx.cond(
                             AuthState.password_change_notice != "",
-                            rx.callout(AuthState.password_change_notice, icon="circle_check", color_scheme="green", width="100%"),
+                            rx.callout(AuthState.password_change_notice, icon="circle_check", color_scheme="jade", width="100%"),
                         ),
                         rx.cond(
                             (AuthState.session_validation == "temporarily_unavailable")
@@ -127,13 +129,13 @@ def login() -> rx.Component:
                                     rx.text(
                                         "E-mail",
                                         weight="medium",
-                                        color="#0F172A",
+                                        color=TEXT_PRIMARY,
                                     ),
                                     rx.hstack(
                                         rx.icon(
                                             tag="mail",
                                             size=19,
-                                            color="#64748B",
+                                            color=TEXT_MUTED,
                                         ),
                                         rx.input(
                                             placeholder="seu@email.com",
@@ -154,13 +156,13 @@ def login() -> rx.Component:
                                         width="100%",
                                         height="58px",
                                         padding="0 1rem",
-                                        border="1px solid #CBD5E1",
+                                        border=f"1px solid {BORDER_SOFT}",
                                         border_radius="12px",
-                                        background="#FFFFFF",
+                                        background=SURFACE,
                                         transition="border-color 150ms ease, box-shadow 150ms ease",
                                         _focus_within={
-                                            "border_color": "#2563EB",
-                                            "box_shadow": "0 0 0 3px rgba(37, 99, 235, 0.12)",
+                                            "border_color": SAGE_DARK,
+                                            "box_shadow": "0 0 0 3px rgba(141, 186, 166, 0.28)",
                                         },
                                     ),
                                     align="stretch",
@@ -171,13 +173,13 @@ def login() -> rx.Component:
                                     rx.text(
                                         "Senha",
                                         weight="medium",
-                                        color="#0F172A",
+                                        color=TEXT_PRIMARY,
                                     ),
                                     rx.hstack(
                                         rx.icon(
                                             tag="lock_keyhole",
                                             size=19,
-                                            color="#64748B",
+                                            color=TEXT_MUTED,
                                         ),
                                         rx.input(
                                             placeholder="Digite sua senha",
@@ -203,12 +205,12 @@ def login() -> rx.Component:
                                                 rx.icon(
                                                     tag="eye_off",
                                                     size=18,
-                                                    color="#64748B",
+                                                    color=TEXT_MUTED,
                                                 ),
                                                 rx.icon(
                                                     tag="eye",
                                                     size=18,
-                                                    color="#64748B",
+                                                    color=TEXT_MUTED,
                                                 ),
                                             ),
                                             type="button",
@@ -219,22 +221,22 @@ def login() -> rx.Component:
                                             height="32px",
                                             padding="0",
                                             min_width="32px",
-                                            color_scheme="gray",
+                                            color=TEXT_MUTED,
                                             cursor="pointer",
-                                            _hover={"background": "#EFF6FF"},
+                                            _hover={"background": MINT_SOFT},
                                         ),
                                         align="center",
                                         spacing="3",
                                         width="100%",
                                         height="58px",
                                         padding="0 1rem",
-                                        border="1px solid #CBD5E1",
+                                        border=f"1px solid {BORDER_SOFT}",
                                         border_radius="12px",
-                                        background="#FFFFFF",
+                                        background=SURFACE,
                                         transition="border-color 150ms ease, box-shadow 150ms ease",
                                         _focus_within={
-                                            "border_color": "#2563EB",
-                                            "box_shadow": "0 0 0 3px rgba(37, 99, 235, 0.12)",
+                                            "border_color": SAGE_DARK,
+                                            "box_shadow": "0 0 0 3px rgba(141, 186, 166, 0.28)",
                                         },
                                     ),
                                     align="stretch",
@@ -246,15 +248,15 @@ def login() -> rx.Component:
                                         "Manter-me conectado",
                                         default_checked=True,
                                         size="2",
-                                        color_scheme="blue",
+                                        color_scheme="jade",
                                     ),
                                     rx.link(
                                         "Esqueceu sua senha?",
                                         href="#",
-                                        color="#2563EB",
+                                        color=SAGE_DARK,
                                         font_size="0.875rem",
                                         font_weight="600",
-                                        _hover={"color": "#1D4ED8"},
+                                        _hover={"color": SAGE_DARK},
                                     ),
                                     align="center",
                                     justify="between",
@@ -280,13 +282,13 @@ def login() -> rx.Component:
                                     height="56px",
                                     loading=AuthState.is_loading,
                                     disabled=AuthState.is_loading,
-                                    color="#FFFFFF",
-                                    background="#2563EB",
+                                    color=TEXT_PRIMARY,
+                                    background=SAGE,
                                     border_radius="10px",
                                     font_weight="600",
                                     cursor="pointer",
                                     transition="background-color 160ms ease",
-                                    _hover={"background": "#1D4ED8"},
+                                    _hover={"background": SAGE_DARK, "color": SURFACE},
                                 ),
                                 width="100%",
                                 align="stretch",
@@ -302,8 +304,8 @@ def login() -> rx.Component:
                     width="100%",
                     max_width="680px",
                     padding="clamp(1.5rem, 5vw, 3rem)",
-                    background="#FFFFFF",
-                    border="1px solid #E2E8F0",
+                    background=SURFACE,
+                    border=f"1px solid {BORDER_SOFT}",
                     border_radius="17px",
                     box_shadow="0 24px 72px rgba(15, 23, 42, 0.09)",
                 ),
@@ -322,5 +324,5 @@ def login() -> rx.Component:
         min_height="100vh",
         position="relative",
         overflow="hidden",
-        background="#F8FAFC",
+        background=SURFACE_ALT,
     )
