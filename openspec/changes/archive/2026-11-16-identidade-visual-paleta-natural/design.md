@@ -28,3 +28,6 @@ O delta altera somente `Paleta global centralizada`, usando o nome canônico e p
 Os requisitos originais `Estados semanticamente legíveis` e `Preservação funcional e responsiva` não precisam de deltas: estão cobertos, respectivamente, por `Estados visuais acessíveis` e `Identidade visual preserva funcionamento e responsividade` em `openspec/specs/identidade-visual/spec.md`. Seus cenários oficiais permanecem inalterados. Essa correspondência evita reaplicar requisitos equivalentes durante o futuro arquivamento.
 
 A abrangência inclui login e alteração de senha, navegação e layout compartilhado, Dashboard, produtos, categorias, fornecedores, estoque, entradas e saídas, usuários e perfis, relatórios e reposição. A menção a movimentações não reintroduz a antiga página de Histórico de Movimentações.
+
+
+O registro da aceitação manual informada pelo usuário em 2026-11-16, com limites de evidência, está em `qa-visual.md`.

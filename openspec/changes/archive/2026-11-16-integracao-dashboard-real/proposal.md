@@ -6,7 +6,7 @@ A página `/dashboard` ainda apresenta contagens, movimentações e alertas fixo
 
 ## O que muda
 
-- Substituir os valores fixos por contagens paginadas e registros dos endpoints existentes de Produtos, Categorias, Fornecedores, Estoque e Movimentações.
+- Substituir os valores fixos pelas fontes do Dashboard atual: Produtos ativos, estoque abaixo do mínimo, solicitações de compra em andamento e movimentações reais. Não criar cartões de Categorias ou Fornecedores, que pertenciam ao escopo inicial e não correspondem ao layout atual.
 - Respeitar os grants atuais de leitura; o backend continuará sendo a autoridade de cada consulta.
 - Reutilizar o cache em memória por sessão e o coordenador de requisições já existentes.
 - Mostrar carregamento, erro, indisponibilidade, ausência de dados e valores em cache explicitamente desatualizados.

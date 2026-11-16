@@ -15,4 +15,4 @@
 
 - [x] 3.1 Adicionar testes simulados de respostas, permissões, isolamento, cache, falhas e ausência de dados fictícios.
 - [x] 3.2 Executar suíte automatizada, compilação Reflex e `git diff --check`.
-- [ ] 3.3 Confirmar no navegador os indicadores reais, alertas, movimentações recentes e os estados sem permissão/erro.
+- [x] 3.3 Confirmar no navegador os indicadores reais, alertas, movimentações recentes e os estados sem permissão/erro; aceitação manual informada pelo usuário em 2026-11-16 para Dashboard com dados reais e com restrições de acesso/falhas. Não foram fornecidas capturas, medições ou logs independentes.

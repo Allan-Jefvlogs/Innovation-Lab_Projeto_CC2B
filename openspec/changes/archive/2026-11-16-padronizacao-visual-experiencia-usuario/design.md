@@ -16,6 +16,10 @@ Os diálogos de cancelamento e justificativa mantêm campos obrigatórios, confi
 
 Após confirmação de entrada ou saída pelo serviço atual, o resumo mostra tipo, produto, quantidade e unidade a partir dos valores submetidos e da resposta validada. O saldo final só é apresentado quando a resposta confiável contiver esse campo; não será inferido no cliente.
 
+## Recuperação de senha demonstrativa
+
+A rota `/recuperar-senha` valida localmente o preenchimento e o formato do e-mail, descarta o valor após a validação e apresenta um modal de confirmação com retorno explícito ao login. Trata-se somente de uma demonstração visual: não consulta usuários, não envia e-mails, não gera tokens, não armazena solicitações e não altera senhas. Não há integração com Xano ou serviço de e-mail.
+
 ## Validação
 
-Testes locais com clientes remotos mockados verificam que somente resultados confirmados abrem o modal, falhas não o abrem, as mensagens e dados de movimentação não são presumidos, e os campos/bindings existentes permanecem. A compilação Reflex confirma a composição dos componentes; não comprova comportamento no Xano publicado nem QA visual em navegador.
+Testes locais com clientes remotos mockados verificam que somente resultados confirmados abrem o modal, falhas não o abrem, as mensagens e dados de movimentação não são presumidos, e os campos/bindings existentes permanecem. A compilação Reflex confirma a composição dos componentes, mas não comprova comportamento no Xano publicado nem substitui a aceitação manual registrada em `qa-visual.md`.

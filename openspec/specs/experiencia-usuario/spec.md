@@ -1,6 +1,9 @@
-# Especificação: experiência visual de operações
+# experiencia-usuario Specification
 
-## ADDED Requirements
+## Purpose
+Define a experiência de confirmação, apresentação de formulários e linguagem operacional do NextStock, incluindo a recuperação de senha exclusivamente demonstrativa.
+
+## Requirements
 
 ### Requirement: Confirmação visual após sucesso
 O sistema MUST exibir uma confirmação visual consistente e contextual somente depois que a operação existente retornar uma resposta válida de sucesso. Falhas, respostas inválidas e resultados ambíguos MUST permanecer como erro ou estado pendente, sem confirmação positiva.
@@ -37,3 +40,15 @@ Mensagens visíveis MUST usar linguagem clara e contextualizada, sem referência
 #### Scenario: Mensagem de operação
 - **WHEN** o sistema comunica sucesso, falha ou validação
 - **THEN** a mensagem descreve a ação e o próximo passo em termos compreensíveis, sem ocultar falha nem alegar resultado não confirmado
+
+### Requirement: Recuperação de senha demonstrativa
+A rota `/recuperar-senha` MUST oferecer uma demonstração visual de recuperação de senha, validar localmente que o e-mail foi preenchido em formato válido e apresentar uma confirmação com retorno explícito à tela de login. Essa demonstração MUST NOT consultar a existência de usuários, enviar o e-mail a Xano ou a um serviço de e-mail, gerar tokens, persistir o e-mail ou a solicitação, nem alterar senhas.
+
+#### Scenario: E-mail válido na demonstração
+- **WHEN** o usuário informa um e-mail em formato válido e solicita a recuperação
+- **THEN** a página apresenta uma confirmação visual genérica e permite retornar ao login por uma ação explícita
+- **AND** o e-mail é usado transitoriamente somente para validação local no handler Reflex, sem envio a serviço externo ou persistência, e nenhuma recuperação real é iniciada.
+
+#### Scenario: E-mail vazio ou malformado
+- **WHEN** o campo não está preenchido ou o formato é inválido
+- **THEN** a página apresenta a validação local e não abre a confirmação.
