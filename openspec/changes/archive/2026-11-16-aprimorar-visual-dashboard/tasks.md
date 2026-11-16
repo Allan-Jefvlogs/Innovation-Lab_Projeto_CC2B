@@ -11,9 +11,9 @@
 ## Verificação
 
 - [x] 2.1 Validar a compilação Reflex após a correção das permissões de `.web`.
-- [ ] 2.2 Comparar visualmente o Dashboard autenticado em desktop (1920 × 960) com a referência, usando dados autorizados.
+- [x] 2.2 Comparar visualmente o Dashboard autenticado em desktop (1920 × 960) com a referência, usando dados autorizados; inspeção e aceitação manual explícitas do usuário registradas em `qa-visual.md` em 2026-11-16.
 - [x] 2.3 Validar a change em modo strict e revisar o diff, preservando rotas, handlers e dependências existentes.
 - [x] 2.4 Gerar build de produção, servir o bundle atualizado e verificar a ausência de alterações nos arquivos de configuração e lockfiles.
-- [ ] 2.5 Conferir visualmente em 1920 × 960 a composição, as duas séries reais e os três períodos. A confirmação funcional não substitui essa conferência visual autenticada.
+- [x] 2.5 Conferir visualmente em 1920 × 960 a composição, as duas séries reais, a legenda e os três períodos; inspeção e aceitação manual explícitas do usuário registradas em `qa-visual.md` em 2026-11-16.
 - [x] 2.6 Consultar a captura oficial e o HTML/CSS da referência publicada para conferir dimensões, cores e hierarquia.
-- [ ] 2.7 Comparar visualmente o Dashboard autenticado em viewport estreito, incluindo painel, gráfico, cartões e ausência de rolagem horizontal.
+- [x] 2.7 Comparar visualmente o Dashboard autenticado em viewport estreito, incluindo painel, gráfico, cartões e ausência de rolagem horizontal; aceitação manual informada pelo usuário em 2026-11-16 para Dashboard mobile. Não foram fornecidas capturas, medições ou logs independentes, nem confirmação das dimensões efetivamente usadas.

@@ -124,6 +124,10 @@ O Dashboard MUST preservar a composição visual operacional aprovada: sidebar f
 - **WHEN** uma fonte está carregando, vazia, indisponível ou com dados potencialmente desatualizados
 - **THEN** a apresentação identifica o estado sem substituir dados reais nem alterar as regras de autorização.
 
+#### Scenario: Composição na resolução desktop de referência
+- **WHEN** o Dashboard autenticado é exibido em 1920 × 960
+- **THEN** a composição preserva a sidebar, o cabeçalho, os indicadores, o gráfico, os alertas e a tabela conforme as proporções desktop descritas neste requisito.
+
 ### Requirement: Saudação usa a identidade autenticada e o horário de São Paulo
 
 O Dashboard MUST mostrar uma saudação baseada no primeiro nome disponível do usuário autenticado e no horário de `America/Sao_Paulo`. MUST NOT inventar um nome quando ele não estiver disponível nem mostrar os textos antigos “VISÃO GERAL DO ESTOQUE” ou “Aqui está o resumo do seu estoque hoje”.
