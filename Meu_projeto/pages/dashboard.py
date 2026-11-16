@@ -118,11 +118,11 @@ def _items_total(response: dict[str, Any], source: str) -> int:
         total = int(response["itemsTotal"])
     except (KeyError, TypeError, ValueError) as exc:
         raise XanoServerError(
-            f"O Xano não retornou a contagem paginada de {source}.", status_code=200
+            f"A resposta não incluiu a contagem paginada de {source}.", status_code=200
         ) from exc
     if total < 0:
         raise XanoServerError(
-            f"O Xano retornou uma contagem inválida de {source}.", status_code=200
+            f"A resposta incluiu uma contagem inválida de {source}.", status_code=200
         )
     return total
 
@@ -227,7 +227,7 @@ def _project_insufficient_stock(response: dict[str, Any]) -> dict[str, Any]:
         or total < len(items)
     ):
         raise XanoServerError(
-            "O Xano retornou um resumo de estoque insuficiente em formato inesperado.",
+            "O resumo de estoque recebido está incompleto ou em formato inesperado.",
             status_code=200,
         )
 
@@ -235,26 +235,26 @@ def _project_insufficient_stock(response: dict[str, Any]) -> dict[str, Any]:
     seen_product_ids: set[int] = set()
     for item in items:
         if not isinstance(item, dict):
-            raise XanoServerError("O Xano retornou um alerta de estoque inválido.", status_code=200)
+            raise XanoServerError("A resposta incluiu um alerta de estoque inválido.", status_code=200)
         product_id = item.get("product_id")
         if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0:
-            raise XanoServerError("O Xano retornou um ID de Produto inválido.", status_code=200)
+            raise XanoServerError("A resposta incluiu um identificador de produto inválido.", status_code=200)
         if product_id in seen_product_ids:
-            raise XanoServerError("O Xano retornou Produtos duplicados no resumo.", status_code=200)
+            raise XanoServerError("O resumo de estoque contém produtos duplicados.", status_code=200)
         seen_product_ids.add(product_id)
 
         code = item.get("codigo")
         name = item.get("nome")
         unit = item.get("unidade_medida")
         if not all(isinstance(value, str) and value.strip() for value in (code, name, unit)):
-            raise XanoServerError("O Xano retornou campos de Produto inválidos.", status_code=200)
+            raise XanoServerError("A resposta contém dados de produto inválidos.", status_code=200)
         try:
             quantity = Decimal(str(item["quantidade_disponivel"]))
             minimum = Decimal(str(item["estoque_minimo"]))
         except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
-            raise XanoServerError("O Xano retornou quantidades de estoque inválidas.", status_code=200) from exc
+            raise XanoServerError("A resposta contém quantidades de estoque inválidas.", status_code=200) from exc
         if not quantity.is_finite() or not minimum.is_finite() or quantity < 0 or minimum < 0:
-            raise XanoServerError("O Xano retornou quantidades de estoque inválidas.", status_code=200)
+            raise XanoServerError("A resposta contém quantidades de estoque inválidas.", status_code=200)
 
         situation = item.get("situacao_estoque")
         if quantity == 0:
@@ -262,9 +262,9 @@ def _project_insufficient_stock(response: dict[str, Any]) -> dict[str, Any]:
         elif quantity < minimum:
             expected_situation = "abaixo_minimo"
         else:
-            raise XanoServerError("O Xano incluiu um Produto sem necessidade de reposição.", status_code=200)
+            raise XanoServerError("O resumo inclui um produto sem necessidade de reposição.", status_code=200)
         if situation != expected_situation:
-            raise XanoServerError("O Xano retornou uma situação de estoque incompatível.", status_code=200)
+            raise XanoServerError("O resumo contém uma situação de estoque incompatível.", status_code=200)
 
         alerts.append(
             {
@@ -525,7 +525,7 @@ class DashboardState(rx.State):
     def _project_stock(response: dict[str, Any]) -> dict[str, Any]:
         items = response.get("items")
         if not isinstance(items, list):
-            raise XanoServerError("O Xano retornou alertas de estoque em formato inesperado.")
+            raise XanoServerError("Os alertas de estoque chegaram em formato inesperado.")
         alerts = []
         for item in items:
             if not isinstance(item, dict):
@@ -544,11 +544,11 @@ class DashboardState(rx.State):
     def _project_movements(response: dict[str, Any]) -> dict[str, Any]:
         items = response.get("items")
         if not isinstance(items, list):
-            raise XanoServerError("O Xano retornou movimentações em formato inesperado.")
+            raise XanoServerError("As movimentações chegaram em formato inesperado.")
         movements = []
         for item in items:
             if not isinstance(item, dict):
-                raise XanoServerError("O Xano retornou um registro de movimentação inválido.", status_code=200)
+                raise XanoServerError("A lista contém um registro de movimentação inválido.", status_code=200)
             movement_type = str(item.get("tipo") or "").lower()
             movements.append(
                 {
@@ -738,7 +738,7 @@ class DashboardState(rx.State):
                     self.retry_after_epoch = max(
                         self.retry_after_epoch, time.time() + _retry_delay_seconds(result)
                     )
-                setattr(self, error_attr, "Falha ao consultar o Xano.")
+                setattr(self, error_attr, "Não foi possível atualizar estes dados. Tente novamente mais tarde.")
                 if source == "movements":
                     self.chart_error = (
                         "Dados anteriores podem estar desatualizados."
@@ -759,7 +759,7 @@ class DashboardState(rx.State):
             elif source == "movements":
                 self.recent_movements = payload["items"]
                 self.chart_data = payload.get("serie", [])
-                self.chart_error = "" if REAL_DASHBOARD_MOVEMENTS_ENABLED else "Integração do gráfico aguarda publicação do contrato Xano."
+                self.chart_error = "" if REAL_DASHBOARD_MOVEMENTS_ENABLED else "O gráfico de movimentações não está disponível neste ambiente."
             else:
                 self.purchase_requests_count = payload["count"]
             setattr(self, error_attr, "" if not is_stale else "Consulta temporariamente indisponível")
@@ -847,7 +847,7 @@ def _project_purchase_requests_summary(response: dict[str, Any]) -> dict[str, in
     count = response.get("solicitacoes_abertas")
     if type(count) is not int or count < 0:
         raise XanoServerError(
-            "O Xano retornou uma contagem de solicitações abertas inválida.",
+            "A resposta contém uma contagem inválida de solicitações abertas.",
             status_code=200,
         )
     return {"count": count}
@@ -861,18 +861,18 @@ def _project_dashboard_movements(response: dict[str, Any], period: str = "7d") -
     series = response.get("serie")
     recent = response.get("recentes")
     if not isinstance(series, list) or not isinstance(recent, dict) or not isinstance(recent.get("items"), list):
-        raise XanoServerError("O Xano retornou o resumo diário de movimentações em formato inesperado.", status_code=200)
+        raise XanoServerError("O resumo diário de movimentações chegou em formato inesperado.", status_code=200)
     projected = DashboardState._project_movements(recent)
     points = []
     for item in series:
         if not isinstance(item, dict) or not isinstance(item.get("dia"), str):
-            raise XanoServerError("O Xano retornou uma data diária inválida.", status_code=200)
+            raise XanoServerError("O resumo contém uma data diária inválida.", status_code=200)
         if type(item.get("entradas")) is not int or item["entradas"] < 0 or type(item.get("saidas")) is not int or item["saidas"] < 0:
-            raise XanoServerError("O Xano retornou totais diários inválidos.", status_code=200)
+            raise XanoServerError("O resumo contém totais diários inválidos.", status_code=200)
         day = datetime.strptime(item["dia"], "%Y-%m" if period == "12m" else "%Y-%m-%d").strftime("%m/%Y" if period == "12m" else "%d/%m")
         points.append({"dia": day, "entradas": item["entradas"], "saidas": item["saidas"]})
     if len(points) != {"7d": 7, "30d": 30, "12m": 12}[period]:
-        raise XanoServerError("O Xano não retornou o período completo.", status_code=200)
+        raise XanoServerError("O resumo não inclui todo o período solicitado.", status_code=200)
     return {"items": projected["items"], "serie": points}
 
 
@@ -1208,7 +1208,7 @@ def dashboard() -> rx.Component:
             _dashboard_heading(),
             rx.cond(
                 DashboardState.is_loading,
-                rx.hstack(rx.spinner(size="1"), rx.text("Atualizando dados do Xano...", size="2", color=TEXT_MUTED), align="center", spacing="2"),
+                rx.hstack(rx.spinner(size="1"), rx.text("Atualizando dados...", size="2", color=TEXT_MUTED), align="center", spacing="2"),
                 rx.fragment(),
             ),
             rx.cond(

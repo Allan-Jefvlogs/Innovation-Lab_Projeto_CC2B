@@ -4,6 +4,7 @@ from ..components.theme import BORDER, BORDER_SOFT, ERROR_TEXT, SUCCESS_TEXT, SU
 from typing import Any
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..components.searchable_select import normalize_search_text
 from ..services.xano_client import XanoAuthError, XanoError, XanoRequestError, auth_client
 from ..state import AuthState
@@ -59,6 +60,11 @@ class SupplierState(rx.State):
     is_loading: bool = False
     error_message: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_open: bool = False
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
     search_term: str = ""
     applied_search_term: str = ""
 
@@ -239,6 +245,7 @@ class SupplierState(rx.State):
         self._clear_form()
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.modal_open = True
 
     def close_modal(self):
@@ -284,6 +291,7 @@ class SupplierState(rx.State):
         self.loading_supplier_id = supplier_id
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         yield
         try:
             supplier = await auth_client.get_supplier(token, int(supplier_id))
@@ -357,6 +365,7 @@ class SupplierState(rx.State):
         self.update_loading = bool(editing_id)
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         yield
         try:
             if editing_id:
@@ -383,6 +392,8 @@ class SupplierState(rx.State):
             self.modal_open = False
             self._clear_form()
             self.success_message = success
+            self.success_dialog_title = "Fornecedor atualizado" if editing_id else "Fornecedor cadastrado"
+            self.success_dialog_open = True
             try:
                 self.suppliers = await self._fetch_all_suppliers(token)
             except Exception:
@@ -507,20 +518,23 @@ def _supplier_modal() -> rx.Component:
                         width="100%",
                         align="center",
                     ),
-                    rx.vstack(
-                        rx.text("Nome / Razão social"),
-                        rx.input(
-                            value=SupplierState.nome_razao_social,
-                            on_change=SupplierState.change_nome_razao_social,
-                            placeholder="Nome ou razão social",
-                            disabled=SupplierState.is_saving,
+                    rx.grid(
+                        rx.vstack(
+                            rx.text("Nome / Razão social"),
+                            rx.input(
+                                value=SupplierState.nome_razao_social,
+                                on_change=SupplierState.change_nome_razao_social,
+                                placeholder="Nome ou razão social",
+                                disabled=SupplierState.is_saving,
+                                width="100%",
+                                max_width="100%",
+                                height="38px",
+                            ),
+                            align="stretch",
+                            spacing="1",
                             width="100%",
+                            grid_column="1 / -1",
                         ),
-                        align="stretch",
-                        spacing="1",
-                        width="100%",
-                    ),
-                    rx.hstack(
                         rx.vstack(
                             rx.text("Tipo de documento"),
                             rx.select(
@@ -529,10 +543,12 @@ def _supplier_modal() -> rx.Component:
                                 on_change=SupplierState.change_tipo_documento,
                                 disabled=SupplierState.is_saving,
                                 width="100%",
+                                max_width=rx.breakpoints({"0px": "100%", "640px": "10rem"}),
+                                height="38px",
                             ),
                             align="stretch",
                             spacing="1",
-                            width="35%",
+                            width="100%",
                         ),
                         rx.vstack(
                             rx.text("Documento"),
@@ -542,15 +558,17 @@ def _supplier_modal() -> rx.Component:
                                 placeholder="CPF ou CNPJ",
                                 disabled=SupplierState.is_saving,
                                 width="100%",
+                                max_width=rx.breakpoints({"0px": "100%", "640px": "22rem"}),
+                                height="38px",
                             ),
                             align="stretch",
                             spacing="1",
-                            width="65%",
+                            width="100%",
                         ),
+                        grid_template_columns=rx.breakpoints({"0px": "minmax(0, 1fr)", "640px": "10rem minmax(0, 1fr)"}),
+                        gap="0.75rem",
                         width="100%",
-                        align="end",
-                        wrap="wrap",
-                        spacing="3",
+                        align_items="start",
                     ),
                     rx.vstack(
                         rx.text("Contato (opcional)"),
@@ -560,6 +578,8 @@ def _supplier_modal() -> rx.Component:
                             placeholder="Telefone ou contato",
                             disabled=SupplierState.is_saving,
                             width="100%",
+                            max_width=rx.breakpoints({"0px": "100%", "640px": "20rem"}),
+                            height="38px",
                         ),
                         align="stretch",
                         spacing="1",
@@ -571,23 +591,24 @@ def _supplier_modal() -> rx.Component:
                     ),
                     rx.hstack(
                         rx.spacer(),
-                        rx.button("Cancelar", on_click=SupplierState.close_modal, variant="soft", disabled=SupplierState.is_saving),
+                        rx.button("Cancelar", on_click=SupplierState.close_modal, variant="soft", size="2", disabled=SupplierState.is_saving),
                         rx.button(
                             rx.cond(SupplierState.is_saving, rx.spinner(), "Salvar"),
                             on_click=SupplierState.save_supplier,
                             disabled=SupplierState.is_saving,
+                            size="2",
                         ),
                         width="100%",
                         justify="end",
-                        spacing="3",
+                        spacing="2",
                     ),
                     width="100%",
                     align="stretch",
-                    spacing="3",
+                    spacing="2",
                 ),
                 width="100%",
-                max_width="36rem",
-                padding="1.5rem",
+                max_width="min(42rem, calc(100vw - 32px))",
+                padding="1.25rem",
                 background=SURFACE,
                 border_radius="0.75rem",
                 box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
@@ -630,7 +651,6 @@ def fornecedores() -> rx.Component:
                 align="center",
                 spacing="3",
             ),
-            rx.cond(SupplierState.success_message != "", rx.text(SupplierState.success_message, color=SUCCESS_TEXT)),
             rx.cond(SupplierState.error_message != "", rx.text(SupplierState.error_message, color=ERROR_TEXT)),
             section(
                 "Fornecedores cadastrados",
@@ -654,6 +674,12 @@ def fornecedores() -> rx.Component:
                 tone="rose",
             ),
             _supplier_modal(),
+            success_dialog(
+                is_open=SupplierState.success_dialog_open,
+                title=SupplierState.success_dialog_title,
+                message=SupplierState.success_message,
+                on_open_change=SupplierState.set_success_dialog_open,
+            ),
             width="100%",
             align="stretch",
             spacing="4",

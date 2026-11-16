@@ -14,6 +14,7 @@ from ..components.theme import (
 )
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..components.searchable_select import normalize_search_text
 from ..services.xano_client import (
     XanoAuthError,
@@ -31,6 +32,11 @@ class CategoryState(rx.State):
     is_loading: bool = False
     error_message: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_open: bool = False
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
 
     search_term: str = ""
     applied_search_term: str = ""
@@ -91,6 +97,7 @@ class CategoryState(rx.State):
         self.is_loading = True
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         yield
         token, authenticated = await self._session()
         if not token or not authenticated:
@@ -135,6 +142,7 @@ class CategoryState(rx.State):
             return
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.new_category_name = ""
         self.modal_open = True
 
@@ -161,12 +169,15 @@ class CategoryState(rx.State):
         self.create_loading = True
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         yield
         try:
             await auth_client.create_category(token, nome=nome)
             self.modal_open = False
             self.new_category_name = ""
             self.success_message = "Categoria criada com sucesso."
+            self.success_dialog_title = "Categoria criada"
+            self.success_dialog_open = True
             try:
                 self.categories = await self._fetch_all_categories(token)
             except Exception:
@@ -213,6 +224,7 @@ class CategoryState(rx.State):
         self.status_loading_category_id = category_id
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         yield
         try:
             category_id_int = int(category_id)
@@ -229,6 +241,14 @@ class CategoryState(rx.State):
                     {**item, "status": confirmed_status} if item["id"] == category_id else item
                     for item in self.categories
                 ]
+            final_status = confirmed_status
+            if final_status not in {"ativo", "inativo"}:
+                confirmed = next((item for item in self.categories if item["id"] == category_id), None)
+                final_status = str(confirmed.get("status") or "") if confirmed else ""
+            if final_status in {"ativo", "inativo"}:
+                self.success_message = "Categoria ativada com sucesso." if final_status == "ativo" else "Categoria inativada com sucesso."
+                self.success_dialog_title = "Categoria atualizada"
+                self.success_dialog_open = True
         except XanoAuthError:
             yield rx.redirect("/")
             return
@@ -408,10 +428,6 @@ def categorias() -> rx.Component:
                 spacing="3",
             ),
             rx.cond(
-                CategoryState.success_message != "",
-                rx.text(CategoryState.success_message, color=SUCCESS_TEXT),
-            ),
-            rx.cond(
                 CategoryState.error_message != "",
                 rx.text(CategoryState.error_message, color=ERROR_TEXT),
             ),
@@ -437,6 +453,12 @@ def categorias() -> rx.Component:
                 tone="peach",
             ),
             _create_category_modal(),
+            success_dialog(
+                is_open=CategoryState.success_dialog_open,
+                title=CategoryState.success_dialog_title,
+                message=CategoryState.success_message,
+                on_open_change=CategoryState.set_success_dialog_open,
+            ),
             width="100%",
             align="stretch",
             spacing="4",

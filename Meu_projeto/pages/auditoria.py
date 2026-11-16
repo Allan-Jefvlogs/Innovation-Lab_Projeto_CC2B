@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import reflex as rx
 
 from ..components.layout import page, section
-from ..components.theme import ERROR_TEXT, TABLE_HEADER, TEXT_MUTED
+from ..components.theme import ERROR_TEXT, MINT, SAGE, SAGE_DARK, TABLE_HEADER, TEXT_MUTED
 from ..services.audit_export import (
     AuditExportConsistencyError,
     AuditExportLimitError,
@@ -201,7 +201,7 @@ class AuditState(rx.State):
             self.events = []
             self.access_denied = True
             self.error_message = (
-                "O Xano não autorizou a consulta de auditoria."
+                "Seu perfil não permite consultar os registros de auditoria."
             )
 
         except XanoError as exc:
@@ -358,7 +358,7 @@ class AuditState(rx.State):
             return
         except XanoPermissionError:
             self.access_denied = True
-            self.export_message = "O Xano não autorizou a exportação da auditoria."
+            self.export_message = "Seu perfil não permite exportar os registros de auditoria."
         except XanoError as exc:
             logger.warning(
                 "Audit export failed: status=%s exception_type=%s",
@@ -425,21 +425,24 @@ def auditoria() -> rx.Component:
         "Auditoria",
         rx.vstack(
             rx.text(
-                "Consulte ações registradas pelo Xano após "
-                "a implantação da auditoria.",
+                "Consulte os registros administrativos disponíveis no sistema.",
                 color=TEXT_MUTED,
             ),
             section(
                 "Filtros",
                 rx.vstack(
-                    rx.hstack(
+                    rx.grid(
                         rx.vstack(
                             rx.text("De"),
                             rx.input(
                                 type="date",
                                 value=AuditState.date_from,
                                 on_change=AuditState.change_date_from,
+                                width="100%",
                             ),
+                            width="100%",
+                            align="stretch",
+                            spacing="1",
                         ),
                         rx.vstack(
                             rx.text("Até"),
@@ -447,7 +450,11 @@ def auditoria() -> rx.Component:
                                 type="date",
                                 value=AuditState.date_to,
                                 on_change=AuditState.change_date_to,
+                                width="100%",
                             ),
+                            width="100%",
+                            align="stretch",
+                            spacing="1",
                         ),
                         rx.vstack(
                             rx.text("ID do usuário"),
@@ -458,7 +465,11 @@ def auditoria() -> rx.Component:
                                 ),
                                 type="number",
                                 min="1",
+                                width="100%",
                             ),
+                            width="100%",
+                            align="stretch",
+                            spacing="1",
                         ),
                         rx.vstack(
                             rx.text("Ação"),
@@ -477,7 +488,11 @@ def auditoria() -> rx.Component:
                                 on_change=(
                                     AuditState.change_action_filter
                                 ),
+                                width="100%",
                             ),
+                            width="100%",
+                            align="stretch",
+                            spacing="1",
                         ),
                         rx.vstack(
                             rx.text("Entidade"),
@@ -494,13 +509,18 @@ def auditoria() -> rx.Component:
                                 on_change=(
                                     AuditState.change_entity_filter
                                 ),
+                                width="100%",
                             ),
+                            width="100%",
+                            align="stretch",
+                            spacing="1",
                         ),
-                        wrap="wrap",
-                        align="end",
-                        spacing="3",
+                        grid_template_columns=rx.breakpoints({"0px": "minmax(0, 1fr)", "640px": "repeat(2, minmax(0, 1fr))", "1150px": "repeat(5, minmax(0, 1fr))"}),
+                        gap="1rem",
+                        width="100%",
+                        align_items="end",
                     ),
-                    rx.hstack(
+                        rx.hstack(
                         rx.button(
                             "Aplicar filtros",
                             on_click=AuditState.apply_filters,
@@ -526,10 +546,12 @@ def auditoria() -> rx.Component:
                                 AuditState.is_exporting
                                 | AuditState.is_loading
                             ),
-                            background="#8DBAA6",
-                            color="#263B32",
-                            _hover={"background": "#A6D0BA"},
+                            background=SAGE,
+                            color=SAGE_DARK,
+                            _hover={"background": MINT},
                         ),
+                        wrap="wrap",
+                        align="center",
                     ),
                     rx.cond(
                         AuditState.export_message != "",

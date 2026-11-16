@@ -252,7 +252,7 @@ def login() -> rx.Component:
                                     ),
                                     rx.link(
                                         "Esqueceu sua senha?",
-                                        href="#",
+                                        href="/recuperar-senha",
                                         color=SAGE_DARK,
                                         font_size="0.875rem",
                                         font_weight="600",

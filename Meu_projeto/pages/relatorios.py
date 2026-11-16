@@ -554,7 +554,7 @@ class ReportState(rx.State):
             self.product_options_stale = stale
             self.filter_options_error_kind = "product" if stale else ""
             if stale and not self.filter_options_message:
-                self.filter_options_message = "As opções de produtos podem estar desatualizadas durante a indisponibilidade do Xano."
+                self.filter_options_message = "As opções de produtos podem estar desatualizadas enquanto a consulta estiver indisponível."
         except XanoAuthError:
             self.product_options = []
             self.product_options_loaded = False
@@ -599,7 +599,7 @@ class ReportState(rx.State):
             self.supplier_options_stale = stale
             self.filter_options_error_kind = "supplier" if stale else ""
             if stale and not self.filter_options_message:
-                self.filter_options_message = "As opções de fornecedores podem estar desatualizadas durante a indisponibilidade do Xano."
+                self.filter_options_message = "As opções de fornecedores podem estar desatualizadas enquanto a consulta estiver indisponível."
         except XanoAuthError:
             self.supplier_options = []
             self.supplier_options_loaded = False
@@ -684,7 +684,7 @@ class ReportState(rx.State):
     @staticmethod
     def _request_error_message(exc: XanoRequestError) -> str:
         if exc.status_code == 429:
-            return exc.message or "O Xano limitou temporariamente as solicitações. Aguarde e tente novamente."
+            return exc.message or "Muitas solicitações foram feitas em pouco tempo. Aguarde e tente novamente."
         if exc.error_code == "PERMISSION_DENIED":
             return "VocÃª nÃ£o possui permissÃ£o para visualizar os relatÃ³rios."
         if exc.error_code in {"INVALID_INPUT", "ERROR_CODE_INPUT_ERROR"}:
@@ -694,7 +694,7 @@ class ReportState(rx.State):
     @classmethod
     def _filter_options_error_message(cls, exc: XanoError) -> str:
         if isinstance(exc, XanoPermissionError):
-            return "A API não autorizou o carregamento das opções dos relatórios."
+            return "Seu perfil não permite carregar as opções dos relatórios."
         if isinstance(exc, XanoRequestError):
             return cls._request_error_message(exc)
         if isinstance(exc, (XanoConnectionError, XanoServerError)):

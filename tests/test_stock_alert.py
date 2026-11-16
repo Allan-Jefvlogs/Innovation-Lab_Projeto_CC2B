@@ -10,7 +10,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from Meu_projeto.pages.movimentacoes import ExitState
+from Meu_projeto.pages.movimentacoes import EntryState, ExitState
 from Meu_projeto.services.email_service import EmailEnvioError
 from Meu_projeto.services.stock_alert import (
     STATUS_ENVIADO,
@@ -151,11 +151,15 @@ def _exit_state(auth_state: SimpleNamespace, *, saldo: str = "12", minimo: str =
         "is_submitting": False,
         "error_message": "",
         "success_message": "",
+        "success_dialog_open": False,
+        "success_dialog_title": "",
+        "success_dialog_message": "",
         "alert_message": "",
         "alert_error": "",
         "product_id": "5",
         "product_code": "P-001",
         "product_name": "Parafuso",
+        "product_unit": "UN",
         "product_query": "P-001 - Parafuso",
         "barcode_value": "P-001",
         "product_options_open": False,
@@ -213,6 +217,8 @@ class RegisterExitAlertTest(unittest.IsolatedAsyncioTestCase):
             await _run(state)
         send.assert_awaited_once()
         self.assertIn("Saldo atual: 8", send.await_args.kwargs["texto"])
+        self.assertTrue(state.success_dialog_open)
+        self.assertNotIn("Estoque atualizado:", state.success_dialog_message)
 
     async def test_saldo_acima_do_minimo_nao_envia(self):
         auth_state = _auth_state()
@@ -225,6 +231,8 @@ class RegisterExitAlertTest(unittest.IsolatedAsyncioTestCase):
         send.assert_not_awaited()
         self.assertEqual(state.alert_message, "")
         self.assertEqual(state.alert_error, "")
+        self.assertTrue(state.success_dialog_open)
+        self.assertIn("Estoque atualizado: 16 UN", state.success_dialog_message)
 
     async def test_falha_do_alerta_mantem_saida_registrada(self):
         auth_state = _auth_state()
@@ -256,6 +264,50 @@ class RegisterExitAlertTest(unittest.IsolatedAsyncioTestCase):
             await _run(state)
         send.assert_not_awaited()
         self.assertEqual(state.error_message, "Estoque insuficiente para esta saída.")
+        self.assertFalse(state.success_dialog_open)
+
+
+class EntrySuccessPresentationTests(unittest.TestCase):
+    def test_entry_summary_only_shows_server_confirmed_balance(self):
+        state = object.__new__(EntryState)
+        state._init_bookkeeping()
+        state.product_name = "Produto de teste"
+        state.product_code = "P-001"
+        state.product_unit = "KG"
+        state.quantidade = "4"
+        state.receipt_order_id = "none"
+        state._receipt_orders_raw = []
+        state._receipt_key = ""
+        state._receipt_payload = {}
+        state._receipt_owner = ""
+        state.receipt_needs_recovery = False
+        state.receipt_requires_reconciliation = False
+        with patch("Meu_projeto.pages.movimentacoes.session_read_cache.invalidate"):
+            state._confirm_entry({"quantidade": "4"}, "session-token")
+
+        self.assertTrue(state.success_dialog_open)
+        self.assertIn("Produto: Produto de teste", state.success_dialog_message)
+        self.assertIn("Quantidade: 4 KG", state.success_dialog_message)
+        self.assertNotIn("Estoque atualizado:", state.success_dialog_message)
+
+    def test_entry_summary_includes_balance_returned_by_server(self):
+        state = object.__new__(EntryState)
+        state._init_bookkeeping()
+        state.product_name = "Produto de teste"
+        state.product_code = "P-001"
+        state.product_unit = "KG"
+        state.quantidade = "4"
+        state.receipt_order_id = "none"
+        state._receipt_orders_raw = []
+        state._receipt_key = ""
+        state._receipt_payload = {}
+        state._receipt_owner = ""
+        state.receipt_needs_recovery = False
+        state.receipt_requires_reconciliation = False
+        with patch("Meu_projeto.pages.movimentacoes.session_read_cache.invalidate"):
+            state._confirm_entry({"quantidade": "4", "saldo_atual": "9"}, "session-token")
+
+        self.assertIn("Estoque atualizado: 9 KG", state.success_dialog_message)
 
 
 if __name__ == "__main__":

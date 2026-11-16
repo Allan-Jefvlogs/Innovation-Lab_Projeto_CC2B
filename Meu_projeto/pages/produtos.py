@@ -8,6 +8,7 @@ import reflex as rx
 from ..components.theme import BORDER, BORDER_SOFT, ERROR_TEXT, SUCCESS_TEXT, SURFACE, SURFACE_ALT, TABLE_HEADER, TEXT_MUTED, WARNING_TEXT
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..components.searchable_select import normalize_search_text, searchable_select
 from ..services.xano_client import (
     XanoAuthError,
@@ -320,6 +321,15 @@ class ProductsState(rx.State):
     category_error_message: str = ""
     supplier_error_message: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_open: bool = False
+    success_redirect_to_list: bool = False
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
+        if not is_open and self.success_redirect_to_list:
+            self.success_redirect_to_list = False
+            return rx.redirect("/produtos")
 
     @rx.var
     def filtered_products(self) -> list[dict[str, str]]:
@@ -502,20 +512,20 @@ class ProductsState(rx.State):
             self.original_product_status = str(remote_product.get("status") or "")
             self.original_product["status"] = self.original_product_status
             status_note = (
-                f"O Xano já está com o status escolhido ({self.current_product_status})."
+                f"O produto já está com o status escolhido ({self.current_product_status})."
                 if self.original_product_status == self.current_product_status
                 else "O status escolhido continua pendente; revise e salve novamente."
             )
             self.error_message = (
                 "Os dados cadastrais foram salvos, mas a alteração de status falhou: "
-                f"{reason} Status confirmado no Xano: {self.original_product_status}. "
+                f"{reason} Status confirmado: {self.original_product_status}. "
                 f"{status_note}"
             )
         except Exception:
             self.error_message = (
                 "Os dados cadastrais podem ter sido salvos, mas a alteração de status falhou "
                 "e não foi possível recarregar o produto. Os valores escolhidos foram mantidos; "
-                "confira o estado no Xano antes de tentar novamente."
+                "atualize o produto antes de tentar novamente."
             )
 
     def _clear_edit_product_data(self):
@@ -889,6 +899,8 @@ class ProductsState(rx.State):
         self.category_error_message = ""
         self.supplier_error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
+        self.success_redirect_to_list = False
         self.can_create_products = False
         yield
         token, is_authenticated = await self._session()
@@ -923,6 +935,8 @@ class ProductsState(rx.State):
     async def create_product(self):
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
+        self.success_redirect_to_list = False
         token, is_authenticated = await self._session()
         if not token or not is_authenticated:
             self.error_message = "Sua sessão não está ativa. Faça login novamente."
@@ -967,7 +981,10 @@ class ProductsState(rx.State):
                 return
             await auth_client.create_product(token, payload)
             _invalidate_products_cache(token)
-            yield rx.redirect("/produtos")
+            self.success_dialog_title = "Produto cadastrado"
+            self.success_message = "Produto cadastrado com sucesso."
+            self.success_dialog_open = True
+            self.success_redirect_to_list = True
         except XanoRequestError as exc:
             if exc.error_code == "DUPLICATE_VALUE":
                 self.error_message = (
@@ -1005,6 +1022,8 @@ class ProductsState(rx.State):
         self.category_error_message = ""
         self.supplier_error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
+        self.success_redirect_to_list = False
         yield
         token, is_authenticated = await self._session()
         if not token or not is_authenticated or not self.can_update_products:
@@ -1137,7 +1156,7 @@ class ProductsState(rx.State):
                 self._clear_edit_product_data()
                 self.can_update_products = False
         except (KeyError, TypeError, ValueError):
-            self.error_message = "O Xano retornou dados de produto em formato inesperado."
+            self.error_message = "Os dados do produto chegaram em um formato inesperado. Tente atualizar a lista."
             self.edit_load_failed = True
         except Exception:
             self.error_message = "Não foi possível carregar o produto. Tente novamente."
@@ -1148,6 +1167,8 @@ class ProductsState(rx.State):
     async def update_product(self):
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
+        self.success_redirect_to_list = False
         token, is_authenticated = await self._session()
         if not token or not is_authenticated or not self.has_loaded_product:
             self.error_message = "Sua sessão não está ativa. Faça login novamente."
@@ -1303,7 +1324,16 @@ class ProductsState(rx.State):
                     {"status": self.original_product_status},
                 )
 
-            yield rx.redirect("/produtos")
+            self.success_dialog_title = "Produto atualizado"
+            self.success_message = (
+                "Produto atualizado e status alterado com sucesso."
+                if status_changed and payload
+                else "Status do produto atualizado com sucesso."
+                if status_changed
+                else "Alterações salvas com sucesso."
+            )
+            self.success_dialog_open = True
+            self.success_redirect_to_list = True
         except (XanoError, XanoRequestError) as exc:
             if fields_update_completed and status_changed:
                 await self._report_partial_status_failure(token, exc.message)
@@ -1312,7 +1342,7 @@ class ProductsState(rx.State):
         except Exception:
             if fields_update_completed and status_changed:
                 await self._report_partial_status_failure(
-                    token, "não foi possível confirmar a resposta do endpoint."
+                    token, "não foi possível confirmar a resposta desta ação."
                 )
             else:
                 self.error_message = "Não foi possível atualizar o produto. Tente novamente."
@@ -1428,10 +1458,10 @@ def _products_table() -> rx.Component:
 
 
 def _form_fields() -> rx.Component:
-    return rx.vstack(
+    return rx.grid(
         rx.vstack(rx.text("Código"), rx.input(value=ProductsState.codigo, on_change=ProductsState.change_codigo, placeholder="Código"), width="100%", align="stretch", spacing="1"),
         rx.vstack(rx.text("Nome"), rx.input(value=ProductsState.nome, on_change=ProductsState.change_nome, placeholder="Nome"), width="100%", align="stretch", spacing="1"),
-        rx.vstack(rx.text("Descrição"), rx.text_area(value=ProductsState.descricao, on_change=ProductsState.change_descricao, placeholder="Descrição (opcional)"), width="100%", align="stretch", spacing="1"),
+        rx.vstack(rx.text("Descrição"), rx.text_area(value=ProductsState.descricao, on_change=ProductsState.change_descricao, placeholder="Descrição (opcional)"), width="100%", align="stretch", spacing="1", grid_column="1 / -1"),
         rx.vstack(
             rx.text("Categoria"),
             searchable_select(
@@ -1489,8 +1519,9 @@ def _form_fields() -> rx.Component:
         ),
         rx.vstack(rx.text("Estoque mínimo"), rx.input(value=ProductsState.estoque_minimo, on_change=ProductsState.change_estoque_minimo, placeholder="0", type="number", step="0.01"), width="100%", align="stretch", spacing="1"),
         width="100%",
-        align="stretch",
-        spacing="3",
+        grid_template_columns=rx.breakpoints({"0px": "minmax(0, 1fr)", "760px": "repeat(2, minmax(0, 1fr))"}),
+        gap="1rem",
+        align_items="start",
     )
 
 
@@ -1499,7 +1530,12 @@ def _feedback() -> rx.Component:
         rx.cond(ProductsState.error_message != "", rx.text(ProductsState.error_message, color=ERROR_TEXT)),
         rx.cond(ProductsState.category_error_message != "", rx.text(ProductsState.category_error_message, color=ERROR_TEXT)),
         rx.cond(ProductsState.supplier_error_message != "", rx.text(ProductsState.supplier_error_message, color=ERROR_TEXT)),
-        rx.cond(ProductsState.success_message != "", rx.text(ProductsState.success_message, color=SUCCESS_TEXT)),
+        success_dialog(
+            is_open=ProductsState.success_dialog_open,
+            title=ProductsState.success_dialog_title,
+            message=ProductsState.success_message,
+            on_open_change=ProductsState.set_success_dialog_open,
+        ),
         width="100%",
         align="stretch",
         spacing="2",
@@ -1620,15 +1656,20 @@ def _product_form(is_edit: bool) -> rx.Component:
         on_click=ProductsState.update_product if is_edit else ProductsState.create_product,
         loading=ProductsState.is_saving,
         disabled=ProductsState.is_saving | edit_save_blocked,
+        size="2",
     )
     form_fields = rx.vstack(
         _form_fields(),
         rx.hstack(
-            rx.link(rx.button("Cancelar"), href="/produtos"),
+            rx.link(rx.button("Cancelar", size="2"), href="/produtos"),
             save_button,
-            spacing="3",
+            spacing="2",
+            justify="end",
+            width="100%",
         ),
         width="100%",
+        max_width="58rem",
+        margin_x="auto",
         align="stretch",
         spacing="4",
     )
@@ -1664,14 +1705,31 @@ def _product_form(is_edit: bool) -> rx.Component:
 def novo_produto() -> rx.Component:
     return page(
         "Novo produto",
-        section("Dados do produto", _product_form(is_edit=False), tone="rose"),
+        rx.box(
+            section("Dados do produto", _product_form(is_edit=False), tone="rose"),
+            width="100%",
+            max_width="60rem",
+        ),
     )
 
 
 def _status_action() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.trigger(
-            rx.button(ProductsState.status_action_label, loading=ProductsState.is_status_loading, disabled=ProductsState.is_status_loading)
+            rx.button(
+                ProductsState.status_action_label,
+                loading=ProductsState.is_status_loading,
+                disabled=ProductsState.is_status_loading,
+                variant="outline",
+                color=rx.cond(ProductsState.is_product_active, ERROR_TEXT, SUCCESS_TEXT),
+                border=rx.cond(
+                    ProductsState.is_product_active,
+                    f"1px solid {ERROR_TEXT}",
+                    f"1px solid {SUCCESS_TEXT}",
+                ),
+                size="2",
+                width="fit-content",
+            )
         ),
         rx.alert_dialog.content(
             rx.alert_dialog.title(ProductsState.status_action_label),
@@ -1696,16 +1754,27 @@ def _status_action() -> rx.Component:
 def editar_produto() -> rx.Component:
     return page(
         "Editar produto",
-        section(
-            "Dados do produto",
-            rx.vstack(
-                rx.cond(ProductsState.is_loading, rx.text("Carregando produto..."), rx.text(f"Status atual: {ProductsState.current_product_status}")),
-                rx.cond(ProductsState.can_change_product_status, _status_action(), rx.text("")),
-                _product_form(is_edit=True),
-                width="100%",
-                align="stretch",
-                spacing="4",
+        rx.box(
+            section(
+                "Dados do produto",
+                rx.vstack(
+                    rx.hstack(
+                        rx.cond(ProductsState.is_loading, rx.text("Carregando produto..."), rx.text(f"Situação atual: {ProductsState.current_product_status}")),
+                        rx.spacer(),
+                        rx.cond(ProductsState.can_change_product_status, _status_action(), rx.fragment()),
+                        width="100%",
+                        align="center",
+                        wrap="wrap",
+                        spacing="3",
+                    ),
+                    _product_form(is_edit=True),
+                    width="100%",
+                    align="stretch",
+                    spacing="4",
+                ),
+                tone="rose",
             ),
-            tone="rose",
+            width="100%",
+            max_width="60rem",
         ),
     )

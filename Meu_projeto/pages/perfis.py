@@ -8,6 +8,7 @@ import reflex as rx
 from ..components.theme import BORDER_SOFT, TEXT_MUTED, WARNING_TEXT
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..services.xano_client import (
     XanoAuthError,
     XanoError,
@@ -83,6 +84,11 @@ class PermissionState(rx.State):
     is_saving: bool = False
     error_message: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_open: bool = False
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
     info_message: str = ""
 
     @rx.var
@@ -198,6 +204,7 @@ class PermissionState(rx.State):
         self.is_loading = True
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.info_message = ""
         yield
         token, profile_id = await self._session()
@@ -229,6 +236,7 @@ class PermissionState(rx.State):
         self.info_message = "Alterações não salvas foram descartadas." if self.is_dirty else ""
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self._use_profile(code)
 
     def toggle_permission(self, code: str, checked: bool):
@@ -242,6 +250,7 @@ class PermissionState(rx.State):
         self.draft_codes = [item["code"] for item in self.catalog if item["code"] in selected]
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
 
     def cancel_changes(self):
         if self.is_saving:
@@ -265,19 +274,22 @@ class PermissionState(rx.State):
         self.is_saving = True
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.info_message = ""
         yield
         try:
             selected_codes = list(self.draft_codes)
             response = await auth_client.update_profile_permissions(token, code, selected_codes, revision)
             if response.get("profile_code") != code or not isinstance(response.get("permissions"), list):
-                raise XanoServerError("O Xano retornou um salvamento em formato inesperado.")
+                raise XanoServerError("Não foi possível confirmar o salvamento das permissões.")
             new_revision = int(response["permission_revision"])
             self.profile_grants = {**self.profile_grants, code: list(response["permissions"])}
             self.profile_revisions = {**self.profile_revisions, code: new_revision}
             self.saved_codes = list(response["permissions"])
             self.draft_codes = list(response["permissions"])
             self.success_message = "Permissões atualizadas com sucesso."
+            self.success_dialog_title = "Permissões atualizadas"
+            self.success_dialog_open = True
             try:
                 self._ingest(await auth_client.get_permissions(token), code)
             except XanoError:
@@ -329,7 +341,12 @@ def perfis() -> rx.Component:
         "Perfis e permissões",
         rx.vstack(
             rx.cond(PermissionState.error_message != "", rx.callout(PermissionState.error_message, icon="triangle_alert", color_scheme="ruby", width="100%")),
-            rx.cond(PermissionState.success_message != "", rx.callout(PermissionState.success_message, icon="circle_check", color_scheme="jade", width="100%")),
+            success_dialog(
+                is_open=PermissionState.success_dialog_open,
+                title=PermissionState.success_dialog_title,
+                message=PermissionState.success_message,
+                on_open_change=PermissionState.set_success_dialog_open,
+            ),
             rx.cond(PermissionState.info_message != "", rx.text(PermissionState.info_message, color=TEXT_MUTED, size="2")),
             section(
                 "Perfil selecionado",

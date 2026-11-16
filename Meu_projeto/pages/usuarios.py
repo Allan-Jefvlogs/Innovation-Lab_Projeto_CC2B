@@ -25,6 +25,7 @@ from ..components.theme import (
 )
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..services.xano_client import (
     XanoAuthError,
     XanoError,
@@ -47,6 +48,11 @@ class UserState(rx.State):
     error_message: str = ""
     profile_error: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_open: bool = False
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
     search_term: str = ""
     applied_search_term: str = ""
     current_page: int = 1
@@ -209,6 +215,7 @@ class UserState(rx.State):
             return
         self._clear_form()
         self.success_message = ""
+        self.success_dialog_open = False
         self.modal_open = True
 
     def close_modal(self):
@@ -310,6 +317,7 @@ class UserState(rx.State):
         if self.status_loading or not self.editing_user_id:
             return
         self.status_error = ""
+        self.success_dialog_open = False
         token, profile_id, own_user_id = await self._session()
         if not token or profile_id != 1:
             yield rx.redirect("/dashboard" if token else "/")
@@ -329,6 +337,8 @@ class UserState(rx.State):
             self.status_confirmation_open = False
             self._clear_form()
             self.success_message = message
+            self.success_dialog_title = "Status do usuário atualizado"
+            self.success_dialog_open = True
             try:
                 await self._fetch_page(token, self.current_page)
             except XanoError:
@@ -403,6 +413,7 @@ class UserState(rx.State):
 
         self.is_saving = True
         self.success_message = ""
+        self.success_dialog_open = False
         yield
         try:
             if editing_id:
@@ -423,6 +434,8 @@ class UserState(rx.State):
             self.modal_open = False
             self._clear_form()
             self.success_message = success
+            self.success_dialog_title = "Usuário atualizado" if editing_id else "Usuário cadastrado"
+            self.success_dialog_open = True
             try:
                 await self._fetch_page(token, self.current_page)
             except XanoError:
@@ -448,6 +461,7 @@ class UserState(rx.State):
         password = str(form_data.get("password") or "")
         confirmation = str(form_data.get("confirm_password") or "")
         self.reset_error = ""
+        self.success_dialog_open = False
         if not password:
             self.reset_error = "Informe a nova senha inicial."
             return
@@ -468,6 +482,8 @@ class UserState(rx.State):
             self.reset_modal_open = False
             self._clear_form()
             self.success_message = "Senha temporária definida. O usuário deverá alterá-la no próximo acesso."
+            self.success_dialog_title = "Senha inicial definida"
+            self.success_dialog_open = True
         except XanoAuthError:
             yield rx.redirect("/")
             return
@@ -556,41 +572,50 @@ def _user_modal() -> rx.Component:
                             rx.button("×", type="button", variant="ghost", on_click=UserState.close_modal, disabled=UserState.is_saving),
                             width="100%", align="center",
                         ),
-                        rx.vstack(
-                            rx.text("Nome"),
-                            rx.input(value=UserState.form_name, on_change=UserState.change_name, auto_complete="off", disabled=UserState.is_saving, width="100%"),
-                            width="100%", align="stretch", spacing="1",
-                        ),
-                        rx.vstack(
-                            rx.text("E-mail"),
-                            rx.input(value=UserState.form_email, on_change=UserState.change_email, type="email", auto_complete="off", disabled=UserState.is_saving, width="100%"),
-                            width="100%", align="stretch", spacing="1",
-                        ),
-                        rx.vstack(
-                            rx.text("Perfil"),
-                            rx.select.root(
-                                rx.select.trigger(placeholder="Selecione um perfil"),
-                                rx.select.content(
-                                    rx.foreach(
-                                        UserState.profiles,
-                                        lambda profile: rx.select.item(profile["name"], value=profile["id"]),
+                        rx.grid(
+                            rx.vstack(
+                                rx.text("Nome"),
+                                rx.input(value=UserState.form_name, on_change=UserState.change_name, auto_complete="off", disabled=UserState.is_saving, width="100%", height="38px"),
+                                width="100%", align="stretch", spacing="1",
+                            ),
+                            rx.vstack(
+                                rx.text("E-mail"),
+                                rx.input(value=UserState.form_email, on_change=UserState.change_email, type="email", auto_complete="off", disabled=UserState.is_saving, width="100%", height="38px"),
+                                width="100%", align="stretch", spacing="1",
+                            ),
+                            rx.vstack(
+                                rx.text("Perfil"),
+                                rx.select.root(
+                                    rx.select.trigger(placeholder="Selecione um perfil", width="100%", height="38px"),
+                                    rx.select.content(
+                                        rx.foreach(
+                                            UserState.profiles,
+                                            lambda profile: rx.select.item(profile["name"], value=profile["id"]),
+                                        ),
+                                    ),
+                                    value=UserState.form_profile_id,
+                                    on_change=UserState.change_profile,
+                                    disabled=UserState.is_saving | UserState.is_self_edit,
+                                    width="100%",
+                                ),
+                                rx.cond(UserState.is_self_edit, rx.text("Seu próprio perfil não pode ser alterado.", size="1", color=TEXT_MUTED)),
+                                width="100%",
+                                max_width=rx.breakpoints({"0px": "100%", "700px": "22rem"}),
+                                align="stretch",
+                                spacing="1",
+                            ),
+                            rx.box(
+                                rx.cond(
+                                    UserState.editing_user_id == "",
+                                    rx.vstack(
+                                        _password_input("Senha inicial", "password", UserState.show_create_password, UserState.toggle_create_password, UserState.is_saving),
+                                        width="100%", align="stretch", spacing="3",
                                     ),
                                 ),
-                                value=UserState.form_profile_id,
-                                on_change=UserState.change_profile,
-                                disabled=UserState.is_saving | UserState.is_self_edit,
+                                grid_column="1 / -1",
+                                width="100%",
                             ),
-                            rx.cond(UserState.is_self_edit, rx.text("Seu próprio perfil não pode ser alterado.", size="1", color=TEXT_MUTED)),
-                            width="100%", align="stretch", spacing="1",
-                        ),
-                        rx.cond(
-                            UserState.editing_user_id == "",
-                            rx.vstack(
-                                _password_input("Senha inicial", "password", UserState.show_create_password, UserState.toggle_create_password, UserState.is_saving),
-                                width="100%", align="stretch", spacing="3",
-                            ),
-                        ),
-                        rx.cond(UserState.form_error != "", rx.text(UserState.form_error, color=ERROR_TEXT)),
+                            rx.box(rx.cond(UserState.form_error != "", rx.text(UserState.form_error, color=ERROR_TEXT)), grid_column="1 / -1", width="100%"),
                         rx.hstack(
                             rx.cond(
                                 (UserState.editing_user_id != "") & ~UserState.is_self_edit,
@@ -600,6 +625,7 @@ def _user_modal() -> rx.Component:
                                     variant="soft", color=WARNING_TEXT, background_color=PEACH_SOFT,
                                     border=f"1px solid {PEACH}", _hover={"background_color": PEACH_TINT},
                                     disabled=UserState.is_saving,
+                                    size="2",
                                 ),
                             ),
                             rx.cond(
@@ -609,19 +635,25 @@ def _user_modal() -> rx.Component:
                                     variant="soft", color=WARNING_TEXT, background_color=PEACH_SOFT,
                                     border=f"1px solid {PEACH}", _hover={"background_color": PEACH_TINT},
                                     disabled=UserState.is_saving,
+                                    size="2",
                                 ),
                             ),
                             rx.spacer(),
-                            rx.button("Cancelar", type="button", on_click=UserState.close_modal, variant="soft", disabled=UserState.is_saving),
-                            rx.button(rx.cond(UserState.is_saving, rx.spinner(), "Salvar"), type="submit", disabled=UserState.is_saving),
-                            width="100%", justify="end", spacing="3",
+                            rx.button("Cancelar", type="button", on_click=UserState.close_modal, variant="soft", size="2", disabled=UserState.is_saving),
+                            rx.button(rx.cond(UserState.is_saving, rx.spinner(), "Salvar"), type="submit", size="2", disabled=UserState.is_saving),
+                            width="100%", justify="end", spacing="2", grid_column="1 / -1",
                         ),
-                        width="100%", align="stretch", spacing="3",
+                        grid_template_columns=rx.breakpoints({"0px": "minmax(0, 1fr)", "700px": "repeat(2, minmax(0, 1fr))"}),
+                        gap="0.75rem",
+                        width="100%",
+                        align="stretch",
+                        spacing="2",
+                    ),
                     ),
                     on_submit=UserState.save_user,
                     width="100%",
                 ),
-                width="100%", max_width="34rem", padding="1.5rem", background=SURFACE,
+                width="100%", max_width="min(42rem, calc(100vw - 32px))", padding="1.25rem", background=SURFACE,
                 border_radius="0.75rem", box_shadow="0 20px 40px rgba(15, 23, 42, 0.2)",
             ),
             position="fixed", top="0", left="0", right="0", bottom="0",
@@ -714,7 +746,6 @@ def usuarios() -> rx.Component:
                 rx.button("Novo usuário", on_click=UserState.open_create_modal, disabled=UserState.profiles_loading | ~UserState.has_profiles),
                 width="100%", wrap="wrap", align="center", spacing="3",
             ),
-            rx.cond(UserState.success_message != "", rx.text(UserState.success_message, color=SUCCESS_TEXT)),
             rx.cond(UserState.error_message != "", rx.text(UserState.error_message, color=ERROR_TEXT)),
             rx.cond(UserState.profile_error != "", rx.text(UserState.profile_error, color=ERROR_TEXT)),
             section(
@@ -741,6 +772,12 @@ def usuarios() -> rx.Component:
             _user_modal(),
             _reset_password_modal(),
             _status_confirmation_modal(),
+            success_dialog(
+                is_open=UserState.success_dialog_open,
+                title=UserState.success_dialog_title,
+                message=UserState.success_message,
+                on_open_change=UserState.set_success_dialog_open,
+            ),
             width="100%", align="stretch", spacing="4",
         ),
     )

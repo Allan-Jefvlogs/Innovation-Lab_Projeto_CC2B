@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-16
+goal: Melhorar a apresentação e a clareza das operações existentes, confirmando
+  sucesso somente após resposta válida do servidor.

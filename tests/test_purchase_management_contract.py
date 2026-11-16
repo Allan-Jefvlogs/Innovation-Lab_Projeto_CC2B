@@ -230,7 +230,7 @@ class PurchaseManagementClientTests(unittest.IsolatedAsyncioTestCase):
                 request.assert_awaited_once_with("mock-token", 8, history_page=1, history_per_page=20)
                 self.assertEqual(state.detail_state, "error")
                 self.assertFalse(state.detail_busy)
-                self.assertIn("incompatível", state.detail_error)
+                self.assertIn("interpretar os detalhes", state.detail_error)
                 for secret in ("mock-token", "private-value", "private-error"):
                     self.assertNotIn(secret, str(logs.output))
         session_read_cache.clear()
@@ -521,7 +521,7 @@ class PurchaseManagementClientTests(unittest.IsolatedAsyncioTestCase):
             async for _ in state.confirm_justification():
                 pass
             request.assert_awaited_once_with("token", 8, "Compra não necessária")
-        self.assertEqual(state.status_message, "Solicitação cancelada pelo Xano.")
+        self.assertEqual(state.status_message, "Solicitação cancelada com sucesso.")
 
 
 if __name__ == "__main__":

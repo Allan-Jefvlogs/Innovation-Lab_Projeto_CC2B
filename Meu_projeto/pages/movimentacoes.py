@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from ..components.layout import mock_table, page, section
+from ..components.operation_feedback import success_dialog
 from ..components.searchable_select import normalize_search_text, searchable_select
 from ..services.stock_alert import STATUS_ENVIADO, STATUS_FALHOU, enviar_alerta_estoque_minimo
 from ..services.xano_client import (
@@ -49,6 +50,7 @@ class EntryState(rx.State):
     product_id: str = ""
     product_code: str = ""
     product_name: str = ""
+    product_unit: str = ""
     product_default_supplier_id: str = ""
     product_options_open: bool = False
     product_page: int = 1
@@ -74,6 +76,9 @@ class EntryState(rx.State):
     is_submitting: bool = False
     error_message: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_message: str = ""
+    success_dialog_open: bool = False
     receipts_enabled: bool = PURCHASE_RECEIPTS_ENABLED
     receipt_orders: list[dict[str, str]] = []
     receipt_order_id: str = "none"
@@ -88,6 +93,9 @@ class EntryState(rx.State):
     _receipt_key: str = ""
     _receipt_payload: dict[str, Any] = {}
     _receipt_owner: str = ""
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
 
     async def load_receipt_orders(self, more: bool = False):
         if not self.receipts_enabled or self.receipt_loading or self.is_submitting or not self.product_id:
@@ -171,10 +179,22 @@ class EntryState(rx.State):
 
     def _confirm_entry(self, result: dict[str, Any], token: str):
         self.success_message = "Entrada registrada com sucesso."
+        receipt = result.get("recebimento")
+        quantity = str(result.get("quantidade") if result.get("quantidade") is not None else self.quantidade)
+        unit = str(result.get("unidade_medida") or self.product_unit or "").strip()
+        if not unit and self.receipt_order_id != "none":
+            order = next((row for row in self._receipt_orders_raw if str(row.get("id")) == self.receipt_order_id), None)
+            unit = str((order or {}).get("unidade_medida_solicitada") or "").strip()
+        details = [f"Produto: {self.product_name or self.product_code}", f"Quantidade: {quantity}" + (f" {unit}" if unit else "")]
+        self.success_dialog_title = "Entrada registrada"
         if result.get("saldo_atual") is not None:
             self.success_message += f" Saldo atualizado: {result['saldo_atual']}."
-        if result.get("recebimento"):
-            self.success_message += f" Pedido: {result['recebimento']['status']}."
+            details.append(f"Estoque atualizado: {result['saldo_atual']}" + (f" {unit}" if unit else ""))
+        if isinstance(receipt, dict):
+            details.append(f"Solicitação: {receipt['status'].replace('_', ' ')}")
+            self.success_message += f" Pedido: {receipt['status']}."
+        self.success_dialog_message = "\n".join(details)
+        self.success_dialog_open = True
         self._receipt_key = ""
         self._receipt_payload = {}
         self._receipt_owner = ""
@@ -263,6 +283,7 @@ class EntryState(rx.State):
             "label": f"{code} - {name}".strip(" -"),
             "codigo": code,
             "nome": name,
+            "unidade_medida": str(item.get("unidade_medida") or ""),
             "fornecedor_padrao_id": str(item.get("fornecedor_padrao_id") or ""),
         }
 
@@ -276,6 +297,7 @@ class EntryState(rx.State):
         self.is_loading = True
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.product_error = ""
         self.supplier_error = ""
         self._clear_entry_fields()
@@ -397,6 +419,7 @@ class EntryState(rx.State):
         self.product_id = product["id"]
         self.product_code = product["codigo"]
         self.product_name = product["nome"]
+        self.product_unit = product.get("unidade_medida", "")
         self.product_query = product["label"]
         self.barcode_value = product["codigo"]
         self.product_default_supplier_id = product.get("fornecedor_padrao_id", "")
@@ -510,6 +533,7 @@ class EntryState(rx.State):
         self.product_id = ""
         self.product_code = ""
         self.product_name = ""
+        self.product_unit = ""
         self.product_default_supplier_id = ""
         self.supplier_id = ""
         self.supplier_query = ""
@@ -625,6 +649,7 @@ class EntryState(rx.State):
 
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
 
         try:
             product_id = int(self.product_id)
@@ -742,6 +767,7 @@ class ExitState(rx.State):
     product_id: str = ""
     product_code: str = ""
     product_name: str = ""
+    product_unit: str = ""
     product_options_open: bool = False
     product_page: int = 1
     product_has_more: bool = False
@@ -761,8 +787,14 @@ class ExitState(rx.State):
     is_submitting: bool = False
     error_message: str = ""
     success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_message: str = ""
+    success_dialog_open: bool = False
     alert_message: str = ""
     alert_error: str = ""
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
 
     @rx.var
     def filtered_products(self) -> list[dict[str, str]]:
@@ -788,12 +820,13 @@ class ExitState(rx.State):
         product_id = str(item.get("id", ""))
         code = str(item.get("codigo") or "")
         name = str(item.get("nome") or "")
-        return {"id": product_id, "label": f"{code} - {name}".strip(" -"), "codigo": code, "nome": name}
+        return {"id": product_id, "label": f"{code} - {name}".strip(" -"), "codigo": code, "nome": name, "unidade_medida": str(item.get("unidade_medida") or "")}
 
     async def load_exit_data(self):
         self.is_loading = True
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.alert_message = ""
         self.alert_error = ""
         self.product_error = ""
@@ -871,6 +904,7 @@ class ExitState(rx.State):
         self.product_id = product["id"]
         self.product_code = product["codigo"]
         self.product_name = product["nome"]
+        self.product_unit = product.get("unidade_medida", "")
         self.product_query = product["label"]
         self.barcode_value = product["codigo"]
         self.product_options_open = False
@@ -974,6 +1008,7 @@ class ExitState(rx.State):
         self.product_id = ""
         self.product_code = ""
         self.product_name = ""
+        self.product_unit = ""
         self.product_query = ""
         self.stock_balance_found = False
         self.saldo_disponivel = ""
@@ -1008,6 +1043,7 @@ class ExitState(rx.State):
             return
         self.error_message = ""
         self.success_message = ""
+        self.success_dialog_open = False
         self.alert_message = ""
         self.alert_error = ""
         try:
@@ -1083,6 +1119,14 @@ class ExitState(rx.State):
                 "data_hora": result.get("data_hora"),
             }
             self.success_message = "Saída registrada com sucesso."
+            recorded_quantity = result.get("quantidade") if result.get("quantidade") is not None else str(quantity_decimal)
+            unit = str(result.get("unidade_medida") or self.product_unit or "").strip()
+            details = [f"Produto: {self.product_name or self.product_code}", f"Quantidade: {recorded_quantity}" + (f" {unit}" if unit else "")]
+            if saldo_atual is not None:
+                details.append(f"Estoque atualizado: {saldo_atual}" + (f" {unit}" if unit else ""))
+            self.success_dialog_title = "Saída registrada"
+            self.success_dialog_message = "\n".join(details)
+            self.success_dialog_open = True
             if saldo_atual is not None:
                 self.success_message += f" Saldo atualizado: {saldo_atual}."
                 self.stock_by_product = {
@@ -1742,132 +1786,160 @@ def entrada() -> rx.Component:
         rx.vstack(
             rx.cond(EntryState.is_loading, rx.center(rx.spinner(), "Carregando dados...")),
             rx.cond(EntryState.error_message != "", rx.text(EntryState.error_message, color=ERROR_TEXT)),
-            rx.cond(EntryState.success_message != "", rx.text(EntryState.success_message, color=SUCCESS_TEXT)),
-            section(
+            success_dialog(
+                is_open=EntryState.success_dialog_open,
+                title=EntryState.success_dialog_title,
+                message=EntryState.success_dialog_message,
+                on_open_change=EntryState.set_success_dialog_open,
+            ),
+            rx.box(
+                section(
                 "Dados da entrada",
                 rx.vstack(
-                    rx.text("Código do produto"),
-                    rx.input(
-                        value=EntryState.barcode_value,
-                        on_change=EntryState.change_barcode,
-                        on_key_down=EntryState.on_barcode_key_down,
-                        placeholder="Leia ou digite o código e pressione Enter",
-                        auto_complete=False,
-                    ),
-                    rx.cond(EntryState.product_error != "", rx.text(EntryState.product_error, color=ERROR_TEXT)),
-                    rx.vstack(
-                        rx.text("Produto"),
-                        searchable_select(
-                            query=EntryState.product_query,
-                            options=EntryState.filtered_products,
-                            is_open=EntryState.product_options_open,
-                            on_search=EntryState.search_products,
-                            on_open=EntryState.open_product_options,
-                            on_close=EntryState.close_product_options,
-                            on_escape=EntryState.close_product_options_on_escape,
-                            on_select=EntryState.select_product,
-                            has_more=EntryState.product_has_more,
-                            is_loading_more=EntryState.product_loading_more,
-                            on_load_more=EntryState.load_more_products,
-                            placeholder="Buscar por código ou nome...",
-                        ),
-                        width="100%", align="stretch", spacing="1",
-                    ),
-                    rx.input(
-                        placeholder="Quantidade",
-                        type="number",
-                        min="0",
-                        step="any",
-                        value=EntryState.quantidade,
-                        on_change=EntryState.change_quantity,
-                    ),
-                    rx.cond(EntryState.receipts_enabled, rx.vstack(
-                        rx.text("Solicitação de compra (opcional)", weight="medium"),
-                        rx.text("Escolha explicitamente um pedido ou mantenha Entrada avulsa.", color=TEXT_MUTED, size="2"),
-                        rx.button("Consultar pedidos do produto", on_click=EntryState.load_receipt_orders(False),
-                                  variant="soft", disabled=EntryState.receipt_loading | EntryState.is_submitting | EntryState.receipt_needs_recovery | (EntryState.product_id == "")),
-                        rx.select.root(
-                            rx.select.trigger(placeholder="Entrada avulsa", width="100%"),
-                            rx.select.content(
-                                rx.select.item("Entrada avulsa", value="none"),
-                                rx.foreach(EntryState.receipt_orders, lambda order: rx.select.item(order["label"], value=order["id"])),
+                    rx.grid(
+                        rx.vstack(
+                            rx.text("Código do produto"),
+                            rx.input(
+                                value=EntryState.barcode_value,
+                                on_change=EntryState.change_barcode,
+                                on_key_down=EntryState.on_barcode_key_down,
+                                placeholder="Leia ou digite o código e pressione Enter",
+                                auto_complete=False,
                             ),
-                            value=EntryState.receipt_order_id, on_change=EntryState.select_receipt_order,
-                            disabled=EntryState.is_submitting | EntryState.receipt_loading | EntryState.receipt_needs_recovery,
+                            rx.cond(EntryState.product_error != "", rx.text(EntryState.product_error, color=ERROR_TEXT)),
+                            width="100%", align="stretch", spacing="1", grid_column="1 / -1",
                         ),
-                        rx.cond(EntryState.receipt_loading, rx.hstack(rx.spinner(), "Consultando pedidos...")),
-                        rx.cond(EntryState.receipt_info != "", rx.text(EntryState.receipt_info, size="2", color=TEXT_MUTED)),
-                        rx.cond(EntryState.receipt_error != "", rx.text(EntryState.receipt_error, role="alert", color=ERROR_TEXT)),
-                        rx.cond(EntryState.receipt_has_more, rx.button("Mais pedidos", on_click=EntryState.load_receipt_orders(True), variant="soft", disabled=EntryState.receipt_loading | EntryState.is_submitting)),
-                        rx.cond(EntryState.receipt_needs_recovery, rx.vstack(
-                            rx.text("Resultado não confirmado. Não registre outra entrada para substituir esta tentativa.", role="alert", color=WARNING_TEXT),
-                            rx.cond(EntryState.receipt_requires_reconciliation,
-                                    rx.text("Resposta incompatível: confira movimento e pedido por leitura antes de reenviar.", role="alert", color=ERROR_TEXT)),
-                            rx.button("Recuperar recebimento", on_click=EntryState.recover_receipt, variant="soft", disabled=EntryState.is_submitting | EntryState.receipt_requires_reconciliation),
-                            align="stretch", width="100%",
-                        )),
-                        align="stretch", gap="8px", width="100%",
-                    )),
-                    rx.vstack(
-                        rx.text("Fornecedor"),
-                        searchable_select(
-                            query=EntryState.supplier_query,
-                            options=EntryState.filtered_suppliers,
-                            is_open=EntryState.supplier_options_open,
-                            on_search=EntryState.search_suppliers,
-                            on_open=EntryState.open_supplier_options,
-                            on_close=EntryState.close_supplier_options,
-                            on_escape=EntryState.close_supplier_options_on_escape,
-                            on_select=EntryState.select_supplier,
-                            has_more=EntryState.supplier_has_more,
-                            is_loading_more=EntryState.supplier_loading_more,
-                            on_load_more=EntryState.load_more_suppliers,
-                            placeholder="Buscar fornecedor...",
+                        rx.vstack(
+                            rx.text("Produto"),
+                            searchable_select(
+                                query=EntryState.product_query,
+                                options=EntryState.filtered_products,
+                                is_open=EntryState.product_options_open,
+                                on_search=EntryState.search_products,
+                                on_open=EntryState.open_product_options,
+                                on_close=EntryState.close_product_options,
+                                on_escape=EntryState.close_product_options_on_escape,
+                                on_select=EntryState.select_product,
+                                has_more=EntryState.product_has_more,
+                                is_loading_more=EntryState.product_loading_more,
+                                on_load_more=EntryState.load_more_products,
+                                placeholder="Buscar por código ou nome...",
+                            ),
+                            width="100%", align="stretch", spacing="1", grid_column="1 / -1",
                         ),
-                        width="100%", align="stretch", spacing="1",
-                    ),
-                    rx.cond(EntryState.supplier_error != "", rx.text(EntryState.supplier_error, color=WARNING_TEXT)),
-                    rx.vstack(
-                        rx.text("Data e hora (opcional)"),
-                        rx.input(
-                            type="datetime-local",
-                            value=EntryState.entry_date_time,
-                            on_change=EntryState.change_entry_date_time,
+                        rx.vstack(
+                            rx.text("Quantidade"),
+                            rx.input(
+                                placeholder="Quantidade", type="number", min="0", step="any",
+                                value=EntryState.quantidade, on_change=EntryState.change_quantity,
+                            ),
+                            width="100%", align="stretch", spacing="1",
                         ),
-                        rx.text(
-                            "Se nenhuma data for informada, será utilizada automaticamente a data e hora do registro da entrada.",
-                            color=TEXT_MUTED,
-                            font_size="0.875rem",
+                        rx.vstack(
+                            rx.text("Data e hora (opcional)"),
+                            rx.input(
+                                type="datetime-local", value=EntryState.entry_date_time,
+                                on_change=EntryState.change_entry_date_time,
+                            ),
+                            rx.text(
+                                "Se nenhuma data for informada, será utilizada automaticamente a data e hora do registro da entrada.",
+                                color=TEXT_MUTED, font_size="0.875rem",
+                            ),
+                            width="100%", align="stretch", spacing="1",
                         ),
-                        width="100%", align="stretch", spacing="1",
-                    ),
-                    rx.input(
-                        placeholder="Motivo",
-                        value=EntryState.motivo,
-                        on_change=EntryState.change_reason,
-                    ),
-                    rx.text_area(
-                        placeholder="Observação",
-                        value=EntryState.observacao,
-                        on_change=EntryState.change_observation,
+                        rx.cond(
+                            EntryState.receipts_enabled,
+                            rx.vstack(
+                                rx.text("Solicitação de compra (opcional)", weight="medium"),
+                                rx.text("Escolha explicitamente um pedido ou mantenha Entrada avulsa.", color=TEXT_MUTED, size="2"),
+                                rx.button(
+                                    "Consultar pedidos do produto", on_click=EntryState.load_receipt_orders(False),
+                                    variant="soft", size="2", width="fit-content",
+                                    disabled=EntryState.receipt_loading | EntryState.is_submitting | EntryState.receipt_needs_recovery | (EntryState.product_id == ""),
+                                ),
+                                rx.select.root(
+                                    rx.select.trigger(placeholder="Entrada avulsa", width="100%"),
+                                    rx.select.content(
+                                        rx.select.item("Entrada avulsa", value="none"),
+                                        rx.foreach(EntryState.receipt_orders, lambda order: rx.select.item(order["label"], value=order["id"])),
+                                    ),
+                                    value=EntryState.receipt_order_id, on_change=EntryState.select_receipt_order,
+                                    disabled=EntryState.is_submitting | EntryState.receipt_loading | EntryState.receipt_needs_recovery,
+                                ),
+                                rx.cond(EntryState.receipt_loading, rx.hstack(rx.spinner(), "Consultando pedidos...")),
+                                rx.cond(EntryState.receipt_info != "", rx.text(EntryState.receipt_info, size="2", color=TEXT_MUTED)),
+                                rx.cond(EntryState.receipt_error != "", rx.text(EntryState.receipt_error, role="alert", color=ERROR_TEXT)),
+                                rx.cond(
+                                    EntryState.receipt_has_more,
+                                    rx.button("Mais pedidos", on_click=EntryState.load_receipt_orders(True), variant="soft", size="2", width="fit-content", disabled=EntryState.receipt_loading | EntryState.is_submitting),
+                                ),
+                                rx.cond(
+                                    EntryState.receipt_needs_recovery,
+                                    rx.vstack(
+                                        rx.text("Resultado não confirmado. Não registre outra entrada para substituir esta tentativa.", role="alert", color=WARNING_TEXT),
+                                        rx.cond(EntryState.receipt_requires_reconciliation, rx.text("Resposta incompatível: confira movimento e pedido por leitura antes de reenviar.", role="alert", color=ERROR_TEXT)),
+                                        rx.button("Recuperar recebimento", on_click=EntryState.recover_receipt, variant="soft", size="2", width="fit-content", disabled=EntryState.is_submitting | EntryState.receipt_requires_reconciliation),
+                                        align="stretch", width="100%",
+                                    ),
+                                ),
+                                align="stretch", gap="8px", width="100%",
+                            ),
+                        ),
+                        rx.vstack(
+                            rx.text("Fornecedor"),
+                            searchable_select(
+                                query=EntryState.supplier_query,
+                                options=EntryState.filtered_suppliers,
+                                is_open=EntryState.supplier_options_open,
+                                on_search=EntryState.search_suppliers,
+                                on_open=EntryState.open_supplier_options,
+                                on_close=EntryState.close_supplier_options,
+                                on_escape=EntryState.close_supplier_options_on_escape,
+                                on_select=EntryState.select_supplier,
+                                has_more=EntryState.supplier_has_more,
+                                is_loading_more=EntryState.supplier_loading_more,
+                                on_load_more=EntryState.load_more_suppliers,
+                                placeholder="Buscar fornecedor...",
+                            ),
+                            rx.cond(EntryState.supplier_error != "", rx.text(EntryState.supplier_error, color=WARNING_TEXT)),
+                            width="100%", align="stretch", spacing="1",
+                        ),
+                        rx.vstack(
+                            rx.text("Motivo"),
+                            rx.input(placeholder="Motivo", value=EntryState.motivo, on_change=EntryState.change_reason),
+                            width="100%", align="stretch", spacing="1",
+                        ),
+                        rx.vstack(
+                            rx.text("Observação"),
+                            rx.text_area(
+                                placeholder="Observação", value=EntryState.observacao,
+                                on_change=EntryState.change_observation, min_height="82px",
+                            ),
+                            width="100%", align="stretch", spacing="1", grid_column="1 / -1",
+                        ),
+                        grid_template_columns=rx.breakpoints({"0px": "minmax(0, 1fr)", "760px": "repeat(2, minmax(0, 1fr))"}),
+                        gap="0.875rem", width="100%",
                     ),
                     rx.hstack(
-                        rx.link(rx.button("Cancelar"), href="/movimentacoes"),
+                        rx.link(rx.button("Cancelar", size="2"), href="/movimentacoes"),
                         rx.button(
                             rx.cond(EntryState.is_submitting, "Registrando...", "Registrar entrada"),
                             on_click=EntryState.register_entry,
                             disabled=EntryState.is_submitting | EntryState.is_loading | EntryState.receipt_needs_recovery,
+                            size="2",
                         ),
-                        spacing="3",
+                        spacing="2", justify="end", width="100%",
                     ),
-                    width="100%",
-                    align="stretch",
-                    spacing="3",
+                    width="100%", max_width="54rem", margin_x="auto", align="stretch", spacing="3",
                 ),
                 tone="mint",
+                ),
+                width="100%",
+                max_width="58rem",
             ),
         ),
     )
+
 
 def saida() -> rx.Component:
     return page(
@@ -1875,99 +1947,115 @@ def saida() -> rx.Component:
         rx.vstack(
             rx.cond(ExitState.is_loading, rx.center(rx.spinner(), "Carregando dados...")),
             rx.cond(ExitState.error_message != "", rx.text(ExitState.error_message, color=ERROR_TEXT)),
-            rx.cond(ExitState.success_message != "", rx.text(ExitState.success_message, color=SUCCESS_TEXT)),
+            success_dialog(
+                is_open=ExitState.success_dialog_open,
+                title=ExitState.success_dialog_title,
+                message=ExitState.success_dialog_message,
+                on_open_change=ExitState.set_success_dialog_open,
+            ),
             rx.cond(ExitState.alert_message != "", rx.text(ExitState.alert_message, color=SUCCESS_TEXT)),
             rx.cond(ExitState.alert_error != "", rx.text(ExitState.alert_error, color=WARNING_TEXT)),
-            section(
+            rx.box(
+                section(
                 "Dados da saída",
                 rx.vstack(
-                    rx.text("Código do produto"),
-                    rx.input(
-                        value=ExitState.barcode_value,
-                        on_change=ExitState.change_barcode,
-                        on_key_down=ExitState.on_barcode_key_down,
-                        placeholder="Leia ou digite o código e pressione Enter",
-                        auto_complete=False,
-                    ),
-                    rx.cond(ExitState.product_error != "", rx.text(ExitState.product_error, color=ERROR_TEXT)),
-                    rx.vstack(
-                        rx.text("Produto"),
-                        searchable_select(
-                            query=ExitState.product_query,
-                            options=ExitState.filtered_products,
-                            is_open=ExitState.product_options_open,
-                            on_search=ExitState.search_products,
-                            on_open=ExitState.open_product_options,
-                            on_close=ExitState.close_product_options,
-                            on_escape=ExitState.close_product_options_on_escape,
-                            on_select=ExitState.select_product,
-                            has_more=ExitState.product_has_more,
-                            is_loading_more=ExitState.product_loading_more,
-                            on_load_more=ExitState.load_more_products,
-                            placeholder="Buscar por código ou nome...",
+                    rx.grid(
+                        rx.vstack(
+                            rx.text("Código do produto"),
+                            rx.input(
+                                value=ExitState.barcode_value,
+                                on_change=ExitState.change_barcode,
+                                on_key_down=ExitState.on_barcode_key_down,
+                                placeholder="Leia ou digite o código e pressione Enter",
+                                auto_complete=False,
+                            ),
+                            rx.cond(ExitState.product_error != "", rx.text(ExitState.product_error, color=ERROR_TEXT)),
+                            width="100%", align="stretch", spacing="1", grid_column="1 / -1",
                         ),
-                        width="100%", align="stretch", spacing="1",
-                    ),
-                    rx.cond(
-                        ExitState.product_id != "",
-                        rx.cond(
-                            ExitState.stock_balance_found,
-                            rx.text(f"Saldo disponível: {ExitState.saldo_disponivel}"),
-                            rx.text("Não foi encontrado saldo de estoque para este produto.", color=WARNING_TEXT),
+                        rx.vstack(
+                            rx.text("Produto"),
+                            searchable_select(
+                                query=ExitState.product_query,
+                                options=ExitState.filtered_products,
+                                is_open=ExitState.product_options_open,
+                                on_search=ExitState.search_products,
+                                on_open=ExitState.open_product_options,
+                                on_close=ExitState.close_product_options,
+                                on_escape=ExitState.close_product_options_on_escape,
+                                on_select=ExitState.select_product,
+                                has_more=ExitState.product_has_more,
+                                is_loading_more=ExitState.product_loading_more,
+                                on_load_more=ExitState.load_more_products,
+                                placeholder="Buscar por código ou nome...",
+                            ),
+                            width="100%", align="stretch", spacing="1", grid_column="1 / -1",
                         ),
-                        rx.fragment(),
-                    ),
-                    rx.cond(
-                        (ExitState.product_id != "") & ExitState.stock_balance_found & ~ExitState.has_available_stock,
-                        rx.text("Este produto não possui estoque disponível.", color=WARNING_TEXT),
-                        rx.fragment(),
-                    ),
-                    rx.input(
-                        placeholder="Quantidade",
-                        type="number",
-                        min="0",
-                        step="any",
-                        value=ExitState.quantidade,
-                        on_change=ExitState.change_quantity,
-                    ),
-                    rx.vstack(
-                        rx.text("Data e hora (opcional)"),
-                        rx.input(
-                            type="datetime-local",
-                            value=ExitState.exit_date_time,
-                            on_change=ExitState.change_exit_date_time,
+                        rx.vstack(
+                            rx.cond(
+                                ExitState.product_id != "",
+                                rx.cond(
+                                    ExitState.stock_balance_found,
+                                    rx.text(f"Saldo disponível: {ExitState.saldo_disponivel}"),
+                                    rx.text("Não foi encontrado saldo de estoque para este produto.", color=WARNING_TEXT),
+                                ),
+                                rx.fragment(),
+                            ),
+                            rx.cond(
+                                (ExitState.product_id != "") & ExitState.stock_balance_found & ~ExitState.has_available_stock,
+                                rx.text("Este produto não possui estoque disponível.", color=WARNING_TEXT),
+                                rx.fragment(),
+                            ),
+                            width="100%", align="stretch", grid_column="1 / -1",
                         ),
-                        rx.text(
-                            "Se nenhuma data for informada, o Xano utilizará a data e hora do registro da saída.",
-                            color=TEXT_MUTED,
-                            font_size="0.875rem",
+                        rx.vstack(
+                            rx.text("Quantidade"),
+                            rx.input(
+                                placeholder="Quantidade", type="number", min="0", step="any",
+                                value=ExitState.quantidade, on_change=ExitState.change_quantity,
+                            ),
+                            width="100%", align="stretch", spacing="1",
                         ),
-                        width="100%", align="stretch", spacing="1",
-                    ),
-                    rx.input(
-                        placeholder="Motivo",
-                        value=ExitState.motivo,
-                        on_change=ExitState.change_reason,
-                    ),
-                    rx.text_area(
-                        placeholder="Observação",
-                        value=ExitState.observacao,
-                        on_change=ExitState.change_observation,
+                        rx.vstack(
+                            rx.text("Data e hora (opcional)"),
+                            rx.input(type="datetime-local", value=ExitState.exit_date_time, on_change=ExitState.change_exit_date_time),
+                            rx.text(
+                                "Se nenhuma data for informada, será utilizada a data e hora do registro da saída.",
+                                color=TEXT_MUTED, font_size="0.875rem",
+                            ),
+                            width="100%", align="stretch", spacing="1",
+                        ),
+                        rx.vstack(
+                            rx.text("Motivo"),
+                            rx.input(placeholder="Motivo", value=ExitState.motivo, on_change=ExitState.change_reason),
+                            width="100%", align="stretch", spacing="1",
+                        ),
+                        rx.vstack(
+                            rx.text("Observação"),
+                            rx.text_area(
+                                placeholder="Observação", value=ExitState.observacao,
+                                on_change=ExitState.change_observation, min_height="82px",
+                            ),
+                            width="100%", align="stretch", spacing="1", grid_column="1 / -1",
+                        ),
+                        grid_template_columns=rx.breakpoints({"0px": "minmax(0, 1fr)", "760px": "repeat(2, minmax(0, 1fr))"}),
+                        gap="0.875rem", width="100%",
                     ),
                     rx.hstack(
-                        rx.link(rx.button("Cancelar"), href="/movimentacoes"),
+                        rx.link(rx.button("Cancelar", size="2"), href="/movimentacoes"),
                         rx.button(
                             rx.cond(ExitState.is_submitting, "Registrando...", "Registrar saída"),
                             on_click=ExitState.register_exit,
                             disabled=ExitState.is_submitting | ExitState.is_loading | ~ExitState.has_available_stock,
+                            size="2",
                         ),
-                        spacing="3",
+                        spacing="2", justify="end", width="100%",
                     ),
-                    width="100%",
-                    align="stretch",
-                    spacing="3",
+                    width="100%", max_width="54rem", margin_x="auto", align="stretch", spacing="3",
                 ),
                 tone="rose",
+                ),
+                width="100%",
+                max_width="58rem",
             ),
         ),
     )

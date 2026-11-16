@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import reflex as rx
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..components.theme import ERROR_TEXT, SUCCESS_TEXT, TEXT_MUTED
 from ..services.session_read_cache import session_read_cache
 from ..services.xano_client import (
@@ -106,6 +107,9 @@ class PurchaseManagementState(rx.State):
     status_choice: str = ""
     status_busy: bool = False
     status_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_message: str = ""
+    success_dialog_open: bool = False
     status_error: str = ""
     needs_reconciliation: bool = False
     justification_open: bool = False
@@ -132,6 +136,9 @@ class PurchaseManagementState(rx.State):
     @rx.var
     def history_page_total(self) -> int:
         return max(1, (self.history_total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
 
     @rx.var
     def allowed_statuses(self) -> list[dict[str, str]]:
@@ -242,7 +249,7 @@ class PurchaseManagementState(rx.State):
             _log_list_failure(exc)
             self.rows = []
             self.list_state = "denied"
-            self.list_error = "O Xano não autorizou a consulta de compras."
+            self.list_error = "Você não tem acesso às solicitações de compras."
         except XanoRequestError as exc:
             _log_list_failure(exc)
             self.list_state = "unavailable" if exc.status_code == 404 else "error"
@@ -251,11 +258,11 @@ class PurchaseManagementState(rx.State):
             _log_list_failure(exc)
             self.list_state = "error"
             self.list_error = (
-                "O Xano respondeu, mas o formato da lista é incompatível. Consulte o diagnóstico no terminal."
+                "Não foi possível interpretar a lista de solicitações. Atualize e tente novamente."
                 if exc.status_code == 200 else
-                "Não foi possível conectar ao Xano. Tente novamente mais tarde."
+                "Não foi possível carregar as solicitações. Verifique sua conexão e tente novamente."
                 if isinstance(exc, XanoConnectionError) else
-                "O Xano não conseguiu carregar as solicitações. Consulte o diagnóstico no terminal."
+                "Não foi possível carregar as solicitações. Tente novamente mais tarde."
             )
         finally:
             self.list_busy = False
@@ -322,7 +329,7 @@ class PurchaseManagementState(rx.State):
         except XanoPermissionError as exc:
             _log_detail_failure(exc)
             self.detail_state = "denied"
-            self.detail_error = "O Xano não autorizou o detalhe desta solicitação."
+            self.detail_error = "Você não tem acesso aos detalhes desta solicitação."
         except XanoRequestError as exc:
             _log_detail_failure(exc)
             self.detail_state = "unavailable" if exc.status_code == 404 else "error"
@@ -331,11 +338,11 @@ class PurchaseManagementState(rx.State):
             _log_detail_failure(exc)
             self.detail_state = "error"
             self.detail_error = (
-                "O Xano respondeu, mas o formato do detalhe é incompatível. Consulte o diagnóstico no terminal."
+                "Não foi possível interpretar os detalhes desta solicitação. Atualize e tente novamente."
                 if exc.status_code == 200 else
-                "Não foi possível conectar ao Xano para carregar o detalhe."
+                "Não foi possível carregar os detalhes. Verifique sua conexão e tente novamente."
                 if isinstance(exc, XanoConnectionError) else
-                "O Xano não conseguiu carregar o detalhe. Consulte o diagnóstico no terminal."
+                "Não foi possível carregar os detalhes da solicitação. Tente novamente mais tarde."
             )
         finally:
             self.detail_busy = False
@@ -396,6 +403,7 @@ class PurchaseManagementState(rx.State):
             return
         self.status_busy = True
         self.status_message = ""
+        self.success_dialog_open = False
         self.status_error = ""
         yield
         try:
@@ -417,7 +425,10 @@ class PurchaseManagementState(rx.State):
             self.needs_reconciliation = True
         else:
             self.request_data = {k: str(v) if v is not None else "" for k, v in result["solicitacao"].items()}
-            self.status_message = "Status atualizado pelo Xano."
+            self.status_message = "Status da solicitação atualizado com sucesso."
+            self.success_dialog_title = "Status atualizado"
+            self.success_dialog_message = self.status_message
+            self.success_dialog_open = True
             _invalidate_reads(token)
             self.history_page = 1
             async for event in self.load_detail(True):
@@ -466,6 +477,7 @@ class PurchaseManagementState(rx.State):
         self.cancel_busy = True
         self.status_error = ""
         self.status_message = ""
+        self.success_dialog_open = False
         yield
         try:
             await auth_client.cancel_purchase_request(token, self.request_id, reason)
@@ -481,7 +493,10 @@ class PurchaseManagementState(rx.State):
             self.needs_reconciliation = True
         else:
             _invalidate_reads(token)
-            self.status_message = "Solicitação cancelada pelo Xano."
+            self.status_message = "Solicitação cancelada com sucesso."
+            self.success_dialog_title = "Solicitação cancelada"
+            self.success_dialog_message = "O cancelamento foi confirmado. O estoque não foi alterado."
+            self.success_dialog_open = True
             self.history_page = 1
             async for event in self.load_detail(True):
                 yield event
@@ -549,13 +564,58 @@ def _justification_dialog() -> rx.Component:
     return rx.cond(PurchaseManagementState.justification_open, rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title(rx.cond(PurchaseManagementState.justification_mode == "rejeicao", "Rejeitar solicitação", "Cancelar solicitação")),
-            rx.dialog.description("Confirme a ação com uma justificativa. O Xano validará o status atual."),
-            rx.text_area(value=PurchaseManagementState.justification, on_change=PurchaseManagementState.change_justification, placeholder="Justificativa obrigatória", width="100%"),
-            rx.hstack(
-                rx.button("Voltar", on_click=PurchaseManagementState.close_justification, variant="soft"),
-                rx.button("Confirmar", on_click=PurchaseManagementState.confirm_justification, disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy),
-                justify="end", width="100%",
+            rx.dialog.description(rx.cond(
+                PurchaseManagementState.justification_mode == "rejeicao",
+                "Informe brevemente o motivo da rejeição.",
+                rx.text(
+                    "Deseja cancelar a solicitação do produto ",
+                    PurchaseManagementState.product_data["codigo"],
+                    " — ",
+                    PurchaseManagementState.product_data["nome"],
+                    "? Informe o motivo para continuar.",
+                ),
+            )),
+            rx.text(
+                rx.cond(PurchaseManagementState.justification_mode == "rejeicao", "Motivo da rejeição", "Motivo do cancelamento"),
+                size="2",
+                weight="medium",
             ),
+            rx.text_area(
+                value=PurchaseManagementState.justification,
+                on_change=PurchaseManagementState.change_justification,
+                placeholder="Descreva brevemente o motivo...",
+                width="100%",
+                min_height="72px",
+                required=True,
+                aria_label="Justificativa obrigatória",
+                resize="vertical",
+            ),
+            rx.hstack(
+                rx.button("Voltar", on_click=PurchaseManagementState.close_justification, variant="soft", size="2"),
+                rx.cond(
+                    PurchaseManagementState.justification_mode == "rejeicao",
+                    rx.button(
+                        "Confirmar rejeição",
+                        on_click=PurchaseManagementState.confirm_justification,
+                        disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy,
+                        size="2",
+                    ),
+                    rx.button(
+                        "Confirmar cancelamento",
+                        on_click=PurchaseManagementState.confirm_justification,
+                        disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy,
+                        variant="outline",
+                        color=ERROR_TEXT,
+                        border=f"1px solid {ERROR_TEXT}",
+                        size="2",
+                    ),
+                ),
+                justify="end", width="100%", spacing="3", wrap="wrap",
+            ),
+            width="100%",
+            max_width="min(32rem, calc(100vw - 32px))",
+            padding="1.25rem",
+            border_radius="1rem",
         ),
         open=PurchaseManagementState.justification_open,
     ), rx.fragment())
@@ -578,16 +638,18 @@ def compra_detalhe() -> rx.Component:
                 rx.text("Solicitante #", PurchaseManagementState.request_data["solicitante_usuario_id"]),
                 rx.text("Criada em: ", PurchaseManagementState.formatted_request_date),
                 rx.text("Status confirmado: ", PurchaseManagementState.confirmed_status_label),
-                rx.cond(PurchaseManagementState.can_update_status & (PurchaseManagementState.allowed_statuses.length() > 0), rx.select.root(
-                    rx.select.trigger(placeholder="Alterar status", width="260px"),
-                    rx.select.content(rx.foreach(PurchaseManagementState.allowed_statuses, lambda item: rx.select.item(item["label"], value=item["code"]))),
-                    value=PurchaseManagementState.status_choice,
-                    on_change=PurchaseManagementState.select_status,
-                    disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy | PurchaseManagementState.needs_reconciliation,
-                )),
-                rx.cond(PurchaseManagementState.can_cancel & PurchaseManagementState.can_cancel_requests, rx.button("Cancelar solicitação", on_click=PurchaseManagementState.open_cancel, variant="soft", disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy | PurchaseManagementState.needs_reconciliation)),
+                rx.hstack(
+                    rx.cond(PurchaseManagementState.can_update_status & (PurchaseManagementState.allowed_statuses.length() > 0), rx.select.root(
+                        rx.select.trigger(placeholder="Alterar status", width="260px"),
+                        rx.select.content(rx.foreach(PurchaseManagementState.allowed_statuses, lambda item: rx.select.item(item["label"], value=item["code"]))),
+                        value=PurchaseManagementState.status_choice,
+                        on_change=PurchaseManagementState.select_status,
+                        disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy | PurchaseManagementState.needs_reconciliation,
+                    )),
+                    rx.cond(PurchaseManagementState.can_cancel & PurchaseManagementState.can_cancel_requests, rx.button("Cancelar solicitação", on_click=PurchaseManagementState.open_cancel, variant="outline", color=ERROR_TEXT, border=f"1px solid {ERROR_TEXT}", size="2", width="fit-content", disabled=PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy | PurchaseManagementState.needs_reconciliation)),
+                    width="100%", align="center", spacing="3", wrap="wrap",
+                ),
                 rx.cond(PurchaseManagementState.status_busy | PurchaseManagementState.cancel_busy, rx.hstack(rx.spinner(), "Salvando...")),
-                rx.cond(PurchaseManagementState.status_message != "", rx.text(PurchaseManagementState.status_message, color=SUCCESS_TEXT, role="status")),
                 rx.cond(PurchaseManagementState.status_error != "", rx.text(PurchaseManagementState.status_error, color=ERROR_TEXT, role="alert")),
                 rx.cond(PurchaseManagementState.needs_reconciliation, rx.button("Atualizar solicitação", on_click=PurchaseManagementState.load_detail(True), variant="soft", disabled=PurchaseManagementState.detail_busy)),
                 width="100%", align="stretch", gap="10px",
@@ -606,5 +668,11 @@ def compra_detalhe() -> rx.Component:
             width="100%", align="stretch", gap="20px",
         )),
         _justification_dialog(),
+        success_dialog(
+            is_open=PurchaseManagementState.success_dialog_open,
+            title=PurchaseManagementState.success_dialog_title,
+            message=PurchaseManagementState.success_dialog_message,
+            on_open_change=PurchaseManagementState.set_success_dialog_open,
+        ),
         width="100%", align="stretch", gap="20px",
     ))

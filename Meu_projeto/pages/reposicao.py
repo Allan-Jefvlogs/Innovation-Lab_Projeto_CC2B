@@ -16,6 +16,7 @@ import reflex as rx
 from ..components.theme import ERROR_TEXT, SUCCESS_TEXT, TEXT_MUTED, WARNING_TEXT
 
 from ..components.layout import page, section
+from ..components.operation_feedback import success_dialog
 from ..services.purchase_request_email import (
     CANCELAMENTO_DESTINATARIO,
     enviar_email_cancelamento_compra,
@@ -259,6 +260,9 @@ class ReplenishmentState(rx.State):
     request_email_contract_enabled: bool = False
     request_create_error: str = ""
     request_success_message: str = ""
+    success_dialog_title: str = ""
+    success_dialog_message: str = ""
+    success_dialog_open: bool = False
     request_submission_in_progress: bool = False
     request_attempt_key: str = ""
     request_attempt_signature: str = ""
@@ -275,6 +279,9 @@ class ReplenishmentState(rx.State):
     cancel_retry_after_epoch: float = 0.0
     session_fingerprint_cache: str = ""
     read_visibility_scope: str = ""
+
+    def set_success_dialog_open(self, is_open: bool):
+        self.success_dialog_open = is_open
 
     @rx.var
     def cancel_justification_valid(self) -> bool:
@@ -462,7 +469,7 @@ class ReplenishmentState(rx.State):
                 self.integration_available = False
                 self.data_stale = False
                 self._set_status("unavailable")
-                self.error_message = "O endpoint de reposição não está disponível no ambiente publicado."
+                self.error_message = "A consulta de reposição não está disponível. Tente novamente mais tarde."
                 self.retry_available = True
             else:
                 self._handle_read_error(exc, cached, token)
@@ -475,7 +482,7 @@ class ReplenishmentState(rx.State):
             self.data_stale = False
             self._set_status("error")
             self.error_message = (
-                "O Xano respondeu, mas os dados de reposição vieram em formato inesperado."
+                "Não foi possível interpretar os dados de reposição; o formato recebido é inesperado. Tente novamente."
                 if _read_error_origin(exc) == "response_contract"
                 else "Não foi possível carregar a reposição. Tente novamente."
             )
@@ -541,14 +548,14 @@ class ReplenishmentState(rx.State):
                 )
             else:
                 self.error_message = (
-                    f"O Xano está limitando as solicitações. Aguarde {delay} segundo(s) e tente novamente."
+                    f"Muitas solicitações em pouco tempo. Aguarde {delay} segundo(s) e tente novamente."
                 )
         elif isinstance(error, XanoConnectionError):
-            self.error_message = "Não foi possível conectar ao Xano. Verifique a conexão e tente novamente."
+            self.error_message = "Não foi possível conectar ao serviço. Verifique a conexão e tente novamente."
         elif status_code == 200:
-            self.error_message = "O Xano respondeu, mas os dados de reposição vieram em formato inesperado."
+            self.error_message = "Não foi possível interpretar os dados de reposição; o formato recebido é inesperado. Tente novamente."
         elif isinstance(status_code, int) and status_code >= 500:
-            self.error_message = "O Xano encontrou uma falha ao consultar a reposição. Tente novamente mais tarde."
+            self.error_message = "Não foi possível consultar a reposição. Tente novamente mais tarde."
         else:
             self.error_message = "Não foi possível carregar a reposição. Tente novamente."
 
@@ -755,6 +762,7 @@ class ReplenishmentState(rx.State):
         self.request_submission_in_progress = True
         self.request_create_error = ""
         self.request_success_message = ""
+        self.success_dialog_open = False
         yield
 
         try:
@@ -822,7 +830,7 @@ class ReplenishmentState(rx.State):
         email_detail = {
             "pendente": "E-mail pendente; nenhum e-mail foi enviado nesta etapa.",
             "falhou": "O envio de e-mail está sinalizado como falho; a solicitação permanece registrada.",
-            "enviado": "O backend informa que o e-mail foi enviado.",
+            "enviado": "E-mail enviado.",
         }[email_status]
         if recipient_email:
             sent = await enviar_email_solicitacao_compra(
@@ -846,6 +854,9 @@ class ReplenishmentState(rx.State):
             if was_repeat
             else f"Solicitação {request['id']} registrada. Status: {request['status']}. {email_detail}"
         )
+        self.success_dialog_title = "Solicitação registrada"
+        self.success_dialog_message = self.request_success_message
+        self.success_dialog_open = True
         self.request_create_error = ""
         self._clear_request_form()
         self.requestable_page = 1
@@ -941,6 +952,7 @@ class ReplenishmentState(rx.State):
         self.cancel_submission_in_progress = True
         self.cancel_error_message = ""
         self.cancel_success_message = ""
+        self.success_dialog_open = False
         yield
         already_cancelled = False
         try:
@@ -982,8 +994,8 @@ class ReplenishmentState(rx.State):
                     self.cancel_error_message = exc.message
                 else:
                     self.cancel_error_message = (
-                        "Não foi possível confirmar o cancelamento. Uma nova tentativa manual "
-                        "reconsultará o estado no Xano antes de alterar o pedido."
+                        "Não foi possível confirmar o cancelamento. Confira o estado da solicitação "
+                        "antes de tentar novamente."
                     )
                 yield
                 return
@@ -1007,6 +1019,9 @@ class ReplenishmentState(rx.State):
                 if sent
                 else " Não foi possível enviar o e-mail de aviso."
             )
+        self.success_dialog_title = "Solicitação cancelada"
+        self.success_dialog_message = self.cancel_success_message
+        self.success_dialog_open = True
         self.cancel_error_message = ""
         self.cancel_form_open = False
         self.cancel_request_id = ""
@@ -1141,11 +1156,16 @@ def _request_form() -> rx.Component:
                         ),
                         justify="end",
                         width="100%",
+                        wrap="wrap",
                     ),
                     width="100%",
                     align="stretch",
                     spacing="3",
                 ),
+                width="100%",
+                max_width="min(34rem, calc(100vw - 32px))",
+                padding="1.5rem",
+                border_radius="1rem",
             ),
             open=ReplenishmentState.request_form_open,
         ),
@@ -1158,22 +1178,24 @@ def _cancel_form() -> rx.Component:
         ReplenishmentState.cancel_form_open,
         rx.dialog.root(
             rx.dialog.content(
-                rx.dialog.title("Cancelar solicitação de compra"),
+                rx.dialog.title("Cancelar solicitação"),
                 rx.vstack(
-                    rx.text("Produto"),
-                    rx.input(value=ReplenishmentState.cancel_product_label, read_only=True),
-                    rx.text(
-                        "Esta solicitação será cancelada somente após confirmação do Xano. "
-                        "O estoque não será alterado."
+                    rx.dialog.description(
+                        rx.text(
+                            "Deseja cancelar a solicitação do produto ",
+                            ReplenishmentState.cancel_product_label,
+                            "? Informe o motivo para continuar."
+                        )
                     ),
-                    rx.text(
-                        "O backend valida a propriedade e o status atual. "
-                        "Se a solicitação já mudou, o cancelamento será recusado."
-                    ),
-                    rx.text("Justificativa"),
+                    rx.text("Motivo do cancelamento", size="2", weight="medium"),
                     rx.text_area(
                         value=ReplenishmentState.cancel_justification,
                         on_change=ReplenishmentState.change_cancel_justification,
+                        placeholder="Descreva brevemente o motivo...",
+                        aria_label="Justificativa do cancelamento",
+                        required=True,
+                        min_height="72px",
+                        resize="vertical",
                         disabled=ReplenishmentState.cancel_submission_in_progress
                         | ReplenishmentState.cancel_attempt_ambiguous,
                     ),
@@ -1184,6 +1206,13 @@ def _cancel_form() -> rx.Component:
                     ),
                     rx.hstack(
                         rx.button(
+                            "Voltar",
+                            on_click=ReplenishmentState.dismiss_cancel_form,
+                            variant="soft",
+                            size="2",
+                            disabled=ReplenishmentState.cancel_submission_in_progress,
+                        ),
+                        rx.button(
                             rx.cond(
                                 ReplenishmentState.cancel_attempt_ambiguous,
                                 "Tentar novamente",
@@ -1192,20 +1221,23 @@ def _cancel_form() -> rx.Component:
                             on_click=ReplenishmentState.confirm_cancel_request,
                             disabled=(~ReplenishmentState.cancel_justification_valid)
                             | ReplenishmentState.cancel_submission_in_progress,
-                        ),
-                        rx.button(
-                            "Fechar",
-                            on_click=ReplenishmentState.dismiss_cancel_form,
-                            variant="soft",
-                            disabled=ReplenishmentState.cancel_submission_in_progress,
+                            variant="outline",
+                            color=ERROR_TEXT,
+                            border=f"1px solid {ERROR_TEXT}",
+                            size="2",
                         ),
                         justify="end",
                         width="100%",
+                        wrap="wrap",
                     ),
                     width="100%",
                     align="stretch",
                     spacing="3",
                 ),
+                width="100%",
+                max_width="min(32rem, calc(100vw - 32px))",
+                padding="1.25rem",
+                border_radius="1rem",
             ),
             open=ReplenishmentState.cancel_form_open,
         ),
@@ -1415,15 +1447,11 @@ def reposicao() -> rx.Component:
     return page(
         "Reposição de Estoque",
         rx.vstack(
-            rx.cond(
-                ReplenishmentState.request_success_message != "",
-                rx.text(ReplenishmentState.request_success_message, color=SUCCESS_TEXT, role="status"),
-                rx.fragment(),
-            ),
-            rx.cond(
-                ReplenishmentState.cancel_success_message != "",
-                rx.text(ReplenishmentState.cancel_success_message, color=SUCCESS_TEXT, role="status"),
-                rx.fragment(),
+            success_dialog(
+                is_open=ReplenishmentState.success_dialog_open,
+                title=ReplenishmentState.success_dialog_title,
+                message=ReplenishmentState.success_dialog_message,
+                on_open_change=ReplenishmentState.set_success_dialog_open,
             ),
             rx.text(
                 "Gerencie produtos com estoque insuficiente e acompanhe solicitações de compras.",

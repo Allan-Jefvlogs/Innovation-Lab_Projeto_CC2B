@@ -2,6 +2,7 @@ import reflex as rx
 
 from .components.theme import APP_GLOBAL_STYLE
 from .pages.login import login
+from .pages.password_recovery_demo import password_recovery_demo
 from .pages.alterar_senha import alterar_senha
 from .pages.account_password import alterar_senha_conta
 from .pages.dashboard import DashboardState, dashboard
@@ -26,6 +27,7 @@ app = rx.App(
 
 # Rota pública — redireciona para /dashboard se já autenticado (Task 5.5)
 app.add_page(login, route="/", title="Login | NexStock", on_load=AuthState.check_already_logged_in)
+app.add_page(password_recovery_demo, route="/recuperar-senha", title="Recuperar senha | NexStock")
 app.add_page(alterar_senha, route="/alterar-senha", title="Alteração de senha | NexStock", on_load=AuthState.require_auth)
 app.add_page(alterar_senha_conta, route="/conta/alterar-senha", title="Alterar senha | NexStock", on_load=AuthState.require_auth)
 

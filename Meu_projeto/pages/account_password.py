@@ -138,7 +138,7 @@ def alterar_senha_conta() -> rx.Component:
         rx.text("Informe sua senha atual e escolha uma nova senha.", color=TEXT_MUTED),
         rx.cond(
             ~AccountPasswordState.enabled,
-            rx.text("A alteração será habilitada após a publicação do contrato no Xano.", color=TEXT_MUTED, role="status"),
+            rx.text("A alteração de senha ainda não está disponível neste ambiente.", color=TEXT_MUTED, role="status"),
             rx.fragment(),
         ),
         rx.form(

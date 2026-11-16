@@ -531,7 +531,7 @@ class ReplenishmentPageTests(unittest.IsolatedAsyncioTestCase):
         get_data.assert_awaited_once()
         self.assertEqual(state.requestable_status, "error")
         self.assertEqual(state.requested_status, "error")
-        self.assertIn("formato inesperado", state.error_message)
+        self.assertIn("formato recebido é inesperado", state.error_message)
         self.assertTrue(state.retry_available)
         self.assertNotEqual(state.requestable_status, "empty")
 
