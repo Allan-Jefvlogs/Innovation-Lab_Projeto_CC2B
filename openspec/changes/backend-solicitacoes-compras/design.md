@@ -4,9 +4,9 @@
 
 - `inventory_stock` possui um saldo por Produto e índice único em `product_id` no artefato local.
 - `GET /stock` exige `stock.read`; separa `abaixo_minimo` (saldo positivo menor que o mínimo) de `sem_estoque` e não filtra Produtos inativos.
-- `POST /entries` exige `stock.entry`, grava o saldo e `inventory_movement` dentro de `db.transaction`; hoje não possui vínculo com uma Solicitação de Compra.
+- Contrato histórico de `POST /entries`: originalmente exigia `stock.entry` e gravava saldo e `inventory_movement` sem vínculo com uma Solicitação de Compra. Implementação local atual: aceita `purchase_request_id`, `chave_recebimento` e `unidade_medida`; valida grant de Entrada e escopo da solicitação, Produto, unidade, estado e saldo pendente; na mesma transação grava movimento, atualiza saldo e recebimento, atualiza status e histórico. A publicação e o comportamento dessa versão atual não foram verificados independentemente.
 - `inventory_movement` é a fonte de histórico de Entradas e Saídas. Não criar outra tabela de movimentação.
-- Não existe tabela, grant nem contrato local de `purchase_request` nesta auditoria.
+- Os artefatos locais atuais incluem `purchase_request`, `purchase_request_history`, `purchase_request_email_delivery` e os contratos locais de leitura, criação, status, cancelamento, reposição e recebimento. A existência local não comprova que esses objetos estejam publicados nem que o workspace corresponda às versões atuais.
 
 Esses contratos locais não provam que scripts futuros estejam publicados ou que uma propriedade concorrente esteja garantida no workspace remoto.
 
@@ -41,7 +41,7 @@ Os filtros `min:0` das colunas decimais permitem zero; o POST deverá validar qu
 
 Para idempotência, o endpoint compara os campos persistidos (`solicitante_usuario_id`, `produto_id`, `quantidade_solicitada` e `urgencia`) quando encontra a mesma `chave_idempotencia`; não é necessário armazenar um hash redundante. Reuso da chave com outro ator ou conteúdo é rejeitado sem devolver o registro existente. A restrição única da chave e o tratamento do conflito ainda dependem de confirmação na instância Xano.
 
-Para associar recebimentos, avaliar adicionar `purchase_request_id` opcional a `inventory_movement` e ao contrato de Entrada. O vínculo só pode ser gravado junto da Entrada confirmada. A quantidade recebida deve ser derivada das movimentações `entrada` confirmadas associadas; o endpoint de Solicitações não altera `inventory_stock` diretamente.
+O vínculo de recebimento está implementado localmente por `purchase_request_id` opcional em `inventory_movement` e no contrato de Entrada. Uma Entrada vinculada exige chave de recebimento e unidade, verifica que o pedido pertence ao ator ou que há escopo global, que Produto/unidade/status correspondem e que a quantidade não excede o saldo pendente. A transação local grava a Entrada e atualiza o saldo; atualiza também quantidade recebida, status parcial/concluído e histórico do pedido. A Entrada avulsa permanece disponível. Isso descreve código local, não confirmação da publicação nem prova de atomicidade/rollback em runtime.
 
 ## Elegibilidade e estados
 
@@ -64,21 +64,54 @@ Sugestão de quantidade: `estoque_minimo - quantidade_disponivel` quando positiv
 - Operação de gestão de estado: apenas transições explicitamente autorizadas e auditadas; não aceitar `concluida` diretamente do cliente.
 - Integração com `POST /entries`: uma Entrada vinculada a pedido valida Produto e estado, grava o vínculo de movimento e contabiliza recebimento na mesma fronteira de escrita. O saldo só muda pela Entrada confirmada. Falhas parciais e rollback precisam de teste isolado.
 
-O schema local de `inventory_movement` e o contrato de `POST /entries` ainda não contêm referência a Solicitação. Eles foram preservados nesta etapa, pois a alteração do fluxo de Entrada está fora do escopo solicitado agora. Uma próxima implementação terá de decidir a ligação imutável entre movimentação confirmada e solicitação antes de declarar recebimento parcial/integral funcional.
+O contrato histórico acima foi substituído na implementação local pela ligação explícita entre Entrada confirmada e solicitação. A chave `chave_recebimento` identifica a tentativa e tem índice UNIQUE declarado no schema local; a unidade da movimentação também é preservada. A aceitação do índice, idempotência, estados, saldo e transação no Xano publicado continuam sem validação independente. As tarefas 2.4 e 3.5 permanecem abertas até a evidência exigida, não obstante a implementação local atual.
 
-Os contratos acima existem somente nos arquivos locais e passaram pela validação sintática MCP. O payload de resposta dos três GETs de solicitação agora é projetado explicitamente; as listas de reposição também selecionam apenas campos de Produto/estoque e o status/ID de solicitação necessários à interface. Ainda não há comparação ou execução desses endpoints no workspace publicado.
+Os contratos descritos acima são as versões locais; a validação MCP cobre sintaxe, não a definição publicada. O payload dos GETs de solicitação e as listas de reposição usam projeções explícitas no código local. Não há comparação independente do workspace atual com essas versões. Relatos manuais limitados de runtime, registrados adiante, não demonstram paridade completa nem cobrem todos os caminhos.
 
-## Permissões propostas
+## Permissões e decisão de propriedade — contrato local atual
 
-- `purchase_request.read`: lista, detalhes e contagem de pedidos.
-- `purchase_request.create`: criar solicitação; além de `stock.read` para consultar a fila de reposição.
-- `purchase_request.cancel`: cancelar pedido persistido permitido; a política proposta permite ao solicitante cancelar seu pedido, e a `purchase_request.manage` permite gestão autorizada. Confirmar a regra de propriedade antes de implementar.
-- `purchase_request.manage`: aprovar, rejeitar e mover estados de gestão.
-- `purchase_request.receive` (opcional): avaliar se a ligação a recebimento precisa de grant próprio além de `stock.entry`; não conceder grants automaticamente.
+- Leituras de solicitação usam `purchase_request.read`; criação usa `purchase_request.create`; Reposição exige `stock.read` e `purchase_request.read`.
+- O PATCH de status usa `purchase_request.status.update`, não `purchase_request.manage`, e restringe as transições previstas; rejeição exige justificativa e encerra/libera o Produto.
+- Cancelamento usa `purchase_request.cancel` ou `purchase_request.manage`; o solicitante pode cancelar a própria solicitação elegível, enquanto outro ator precisa de `manage`. A rota preserva o bypass administrativo do autorizador central.
+- Entrada avulsa usa `stock.entry`. Recebimento vinculado também exige `purchase_request.read` e valida propriedade ou escopo global; não há grant local `purchase_request.receive` no fluxo atual.
+- O contrato local define estados ativos como `aberta`, `em_analise`, `aprovada`, `em_compra`, `aguardando_recebimento` e `recebimento_parcial`; `cancelada` e `rejeitada` são terminais. `concluida` resulta do recebimento integral, não de uma escolha manual de status.
 
-Os endpoints locais de leitura usam `purchase_request.read`, a criação usa `purchase_request.create`, e a reposição exige `stock.read` junto de `purchase_request.read`, conforme decisão funcional registrada nesta etapa. Cancelamento e gestão ainda não têm endpoints locais; quando implementados deverão validar `purchase_request.cancel` e `purchase_request.manage`. A interface apenas oculta ações e não substitui a validação Xano. Nenhum código foi adicionado ao catálogo remoto e nenhum grant foi concedido.
+Há uma divergência documental/técnica no provisionamento local: `provision_purchase_request_permissions` cataloga `read/create/cancel/manage`, enquanto `provision_purchase_profile` inclui `read/manage/status.update`; o PATCH de status exige `status.update`, e a matriz GET reflete as associações existentes. A política efetiva de grants por perfil — especialmente quais perfis recebem `create`, `cancel` e `status.update` — precisa ser reconciliada antes de concluir 1.4. Nenhuma dessas definições locais prova o catálogo ou as associações publicados no Xano.
 
-O autorizador central procura `inventory_permission.code`; para perfis não administradores, código inexistente gera `PERMISSION_CATALOG_INVALID`, e código existente sem associação ao perfil gera `PERMISSION_DENIED`. Assim, os códigos serão reconhecidos quando forem provisionados, sem que isso conceda acesso. `GET /permissions` é protegido como administrador e permite conferir o catálogo; o PATCH de matriz de perfil substitui associações existentes e não deve ser usado para cadastrar os códigos. O `seed_initial_data` local inclui atribuições iniciais de outros grants, portanto não deve ser executado para esta implantação. O provisionamento deve inserir somente as quatro linhas de catálogo (`purchase_request.read/create/cancel/manage`) por procedimento administrativo revisado, sem linhas em `inventory_profile_permission`.
+O autorizador central procura `inventory_permission.code`; código inexistente e código sem associação são condições distintas de erro. `GET /permissions` retorna a matriz das associações existentes; o PATCH da matriz substitui associações e não deve ser usado para cadastrar códigos. O `seed_initial_data` inclui grants iniciais alheios e não deve ser executado para este provisionamento. A recomendação histórica de inserir somente `read/create/cancel/manage` não representa uma matriz final: os helpers atuais divergem quanto a `create`, `cancel` e `status.update`, conforme registrado acima. Nenhuma função de provisionamento foi executada nesta revisão, e o catálogo/grants remotos não foram confirmados.
+
+## Reconciliação documental e limitações restantes — 2026-11-16
+
+Os contratos locais foram consolidados para payloads, grupos de API, estados ativos/terminais e política de propriedade/cancelamento. Para o contrato escrito nas specs, o ator vem da sessão; cancelamento pelo solicitante limita-se ao próprio pedido e a `aberta`/`em_analise`, enquanto gestão de pedido alheio exige grant global. Isso registra a decisão documental disponível no projeto, mas não comprova grants ou autorização em runtime.
+
+O modelo local e a spec descrevem `purchase_request`, histórico imutável e a relação da Entrada confirmada. Os artefatos atuais preservam `purchase_request_id`, chave de recebimento e unidade; o endpoint de Entrada atualiza saldo, movimento, quantidade recebida, status e histórico na transação local. As tarefas 2.4 e 3.5 permanecem abertas porque essa reconciliação não demonstra que a versão publicada tenha esses campos nem que as invariantes transacionais tenham sido observadas no Xano.
+
+As tarefas documentais 1.1, 1.3 e 4.5 foram consolidadas nesta revisão. 1.4 permanece aberta: há divergência entre o catálogo de permissões preparado por `provision_purchase_request_permissions`, o conjunto `read/manage/status.update` de `provision_purchase_profile`, a exigência de `create` no POST e a matriz dinâmica de `GET /permissions`. A lista final de grants por perfil precisa ser decidida antes de declarar a matriz coerente. Não se presume provisionamento nem concessão remota.
+
+| Tarefa pendente | Evidência local ou relato registrado | O que falta / dependência | Risco residual |
+|---|---|---|---|
+| 1.2 | Schemas locais declaram índices UNIQUE e nullable, e há relato histórico do usuário sobre conferência visual de alguns campos/índices. | Confirmar o schema atual no workspace e a semântica de conflito/múltiplos `NULL`; requer evidência Xano, sem inserção de teste no datasource compartilhado. | Idempotência e unicidade efetiva não comprovadas. |
+| 1.4 | Os helpers locais e `GET /permissions` mostram códigos e grants pretendidos, mas os conjuntos divergem como descrito acima. | Resolver a matriz final de grants localmente e, depois, confirmar catálogo/associações remotos com autorização. | Perfil pode não ter o grant exigido por uma rota ou matriz publicada pode divergir. |
+| 2.2 | POST local compara a chave e payload; schemas locais declaram índices para chave idempotente e Produto ativo. | Confirmar suporte/importação dos índices, nullable e tratamento de colisão; Xano Free e validação runtime são dependências. | Repetição e criação simultânea podem divergir do contrato; não há falha confirmada. |
+| 2.3 | PATCH de status local define transições, ator autenticado, justificativa para rejeição, histórico e liberação do Produto em rejeição. | Confirmar a versão publicada e o comportamento de cada transição/erro em runtime. | Atualização e histórico não foram comprovados no servidor; `db.edit` não é compare-and-set. |
+| 2.4 | `entries_post.xs` e `inventory_movement.xs` locais implementam vínculo, chave de recebimento, unidade e atualização de pedido/saldo/histórico. O usuário relatou recebimento parcial e integral; é relato manual, não verificação independente. | Confirmar contrato publicado, idempotência, limites de quantidade, estados e consistência transacional. | Rollback, corrida e invariantes no servidor continuam não comprovados. |
+| 3.3 | POST local valida sessão, Produto/saldo, urgência e chave; há relato do usuário de uma criação no workspace em 2026-10-26. | Exercitar versão atual para repetição idempotente, payload incompatível, falhas e grants; a criação relatada foi de uma versão/caminho específico. | Não se conhece o comportamento remoto de todos os caminhos. |
+| 3.4 | PATCHes locais implementam cancelamento e status; existe relato manual de cancelamento em 2026-10-26. | Confirmar versão atual, transições, gestão, propriedade, histórico, erros e grants no Xano publicado. | Cobertura de um cancelamento relatado não prova outros estados nem autorização negativa. |
+| 3.5 | `POST /entries` local aceita vínculo e exige `stock.entry`; o modelo preserva movimento e unidade. Há também relato de recebimentos parciais/totais. | Confirmar publicação e compatibilidade com todos os clientes legados e regras do servidor. | Contrato local e remoto pode divergir; sem nova prova não marcar concluída. |
+| 3.6 | Há validações sintáticas MCP e testes estruturais locais registrados; o histórico documenta rejeição de importação de uma forma anterior de `throw` e não registra dry-run atual executado. | Revisar previews seletivos e validar os contratos atuais com MCP/importador, sem confundir dry-run com publicação. | Importador e respostas HTTP podem diferir da validação local. |
+| 4.1 | A change registra testes estruturais/simulados de contratos, grants, estados, idempotência e falhas. | A cobertura completa de cenários isolados não está demonstrada; testes estruturais não executam XanoScript nem banco. | Erros de runtime podem não ser detectados localmente. |
+| 4.2 | Explicitamente classificada como evolução futura fora do aceite acadêmico; nenhum teste concorrente foi declarado aprovado. | Requer ambiente isolado e execução de repetição após timeout, concorrência e colisão única. | Duplicidade concorrente permanece sem prova. |
+| 4.3 | Código local agrupa operações relacionadas em transações; recebimento parcial/integral foi relatado pelo usuário. | Teste isolado de Entrada, rollback e invariantes no Xano; essa validação não foi feita nesta etapa. | Atomicidade e consistência remotas não comprovadas. |
+| 5.4 | Campo nullable e POST local aceitam ausência/NULL; usuário informou que a coluna foi criada e registros antigos permaneceram NULL. | Publicar/validar a versão de transição e persistência/idempotência antes de ativar o campo no Reflex. | Ativar antes da compatibilidade remota pode quebrar clientes legados. |
+| 5.5 | Outbox, seleção de provedor e dispatcher Brevo/Resend existem localmente; testes são estáticos/simulados. | Definir configuração operacional, publicar e validar entrega real com autorização explícita. | Não há entrega confirmada pelo Xano; resultados ambíguos exigem reconciliação manual. |
+| 6.6 | Schema e fluxo de outbox estão nos arquivos locais; há relato do usuário de publicação anterior de parte desses objetos, não confirmado independentemente e sem prova de paridade atual. | Comparar/publicar seletivamente, validar índices/transações e obter aprovação antes de envio controlado. | Publicação parcial ou divergente pode impedir a outbox ou criar falhas de entrega. |
+| 6.9 | Guardas locais Resend exigem remetente de teste e destinatário allowlisted. | Confirmar configuração permitida no Xano e validar runtime sob aprovação; não expor o valor. | O dispatcher falhará fechado se a allowlist estiver ausente/incompatível. |
+| 7.5 | Adapters Brevo/Resend e tratamento fail-closed estão documentados localmente; teste isolado do usuário fora do Xano não comprova egress do workspace. | Confirmar configuração e remetente, política de IP/allowlist, publicar e executar teste controlado autorizado. | IP ou políticas do provedor podem bloquear envio; não há resultado runtime atual. |
+| 7.6 | Não há agenda/trigger implementado; o dispatcher estático/manual não foi invocado nesta change. | Definir mecanismo compatível com o plano, monitoramento e reconciliação; verificar disponibilidade do recurso no plano. | Sem execução automática, itens da outbox dependem de operação manual; automação pode exigir recurso não disponível. |
+
+Os registros de publicação são históricos e de fontes distintas: há confirmação manual do usuário de criação/cancelamento pela interface em 2026-10-26 e relatos posteriores sobre publicação de alguns objetos de e-mail; outras seções registram mudanças locais posteriores e ausência de execução do dispatcher. Não há comparação independente do Xano com a versão local atual. Portanto, não se declara paridade remota dos endpoints, schemas, grants, outbox ou dispatcher.
+
+Não serão realizadas novas tentativas remotas nesta etapa. A change permanece ativa; esta reconciliação não é o relatório final acadêmico e não autoriza publicação, configuração, envio ou arquivamento.
 
 ## Idempotência e concorrência
 
@@ -94,9 +127,9 @@ Além disso, a prevenção de duas solicitações simultâneas depende do índic
 
 ## E-mail e recebimento
 
-E-mail é fase posterior. Não criar destinatário fictício nem chamar serviço de e-mail nesta Change. Falha futura de e-mail mantém pedido ativo e auditável.
+O recebimento parcial mantém o pedido ativo; o recebimento integral local atualiza o status para `concluida` e encerra a chave de Produto ativo. Somente a Entrada vinculada altera o saldo; rejeição e cancelamento registram histórico e liberam a chave de Produto. Esses comportamentos são contratos/código locais, ainda sujeitos à validação remota indicada nas tarefas abertas.
 
-Recebimento parcial mantém o pedido ativo. Somente Entradas Xano confirmadas e vinculadas alteram `quantidade_recebida` e o saldo. Cancelamento/rejeição preserva histórico. Ao fechar legitimamente o pedido, recalcular elegibilidade a partir do saldo atual; se ainda insuficiente, o Produto volta à lista de elegíveis.
+A entrega de e-mail avançou além da fase histórica sem envio: há schema local de outbox, registro transacional de intenções e dispatcher interno com adapters Brevo/Resend. O dispatcher não foi invocado nesta change, não há confirmação independente de publicação/runtime atual, e nenhum e-mail foi enviado pelo trabalho local descrito aqui. Configuração incompleta deve falhar de forma segura sem bloquear a operação comercial, conforme os contratos; entrega real e execução automática continuam pendentes.
 
 ## Cache e limite de requisições
 

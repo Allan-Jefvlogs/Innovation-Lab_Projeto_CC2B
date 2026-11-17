@@ -65,3 +65,53 @@ Não usar push geral, --sync, --delete, --records ou --force. Publicação real 
 ## Interrupção e recuperação
 
 Se preview, importação ou teste funcional falhar, interromper o lote e não atribuir o novo perfil. Comparar o objeto afetado com a cópia preservada e revisar sua restauração seletiva, sem sobrescrever outros trabalhos. Se houver resultado ambíguo de PATCH, reler pedido e histórico antes de qualquer nova tentativa. Não repetir escrita automaticamente nem apagar registros para esconder uma falha.
+
+## Limitações registradas — ciclo de 2026-11-16
+
+Não serão realizadas novas tentativas remotas nesta etapa. A change permanece ativa, e estas pendências serão consideradas na consolidação posterior solicitada para o relatório acadêmico. Este documento não é o relatório final.
+
+### Tarefa 2.3 — teste funcional remoto do PATCH de status
+
+- **Evidência disponível:** implementação local do PATCH nativo com `db.transaction`, leitura e validação do status esperado, edição do pedido e gravação do histórico; validação sintática pelo Xano Developer MCP e testes locais com mocks/inspeção estrutural, registrados acima. O usuário informou que o teste funcional do PATCH no Xano Free não foi executado.
+- **Não comprovado:** execução no workspace publicado, confirmação de status e histórico em runtime e liberação de `active_product_id` após rejeição.
+- **Motivo e dependências:** requer publicação seletiva autorizada, solicitações fictícias apropriadas e sessão/conta de teste autorizada. Nenhuma escrita remota será repetida neste ciclo.
+- **Risco residual:** o comportamento em runtime permanece desconhecido; não há falha funcional confirmada. Testes locais e validação de sintaxe não substituem o teste remoto.
+
+### Tarefa 4.4 — dry-runs, impacto e autorização
+
+- **Evidência disponível:** plano de publicação com oito comandos seletivos em modo dry-run, identificando objetos e ordem de dependências; revisão local dos consumidores e restrições de publicação descritas neste documento. O histórico registra que os previews não foram executados nesta etapa. Há registro anterior de falha da CLI com `uv_os_get_passwd returned ENOMEM`; não se repetiu esse comando.
+- **Não comprovado:** resultados dos oito dry-runs, impacto confirmado pelo preview do Xano e autorização específica para publicação real.
+- **Motivo e dependências:** a CLI falhou ao resolver o usuário do sistema operacional e ainda é necessária autorização separada após revisão dos previews.
+- **Risco residual:** publicar sem inspecionar cada preview pode afetar objetos não pretendidos; não há publicação nem impacto remoto confirmado.
+
+### Tarefa 4.5 — transições, histórico, índice ativo e estado desatualizado
+
+- **Evidência disponível:** contratos locais, cenários e testes automatizados com mocks/estrutura; PATCH local valida o estado lido dentro da transação e registra histórico. O usuário relatou resultados funcionais anteriores em registros de compra, mas eles não constituem evidência independente nem comprovam todos os critérios desta tarefa.
+- **Não comprovado:** sequência completa no Xano publicado, histórico correspondente, liberação do índice ativo na rejeição e rejeição de estado já desatualizado.
+- **Motivo e dependências:** depende da publicação autorizada do PATCH e de pedidos fictícios com estado inicial conhecido, além de consulta autorizada de leitura para confirmar os efeitos.
+- **Risco residual:** transições e efeitos no servidor não foram confirmados; isso representa ausência de comprovação, não falha funcional conhecida. Concorrência e rollback induzido permanecem fora dos critérios acadêmicos vigentes.
+
+### Tarefa 4.6 — associação autorizada da conta de teste
+
+- **Evidência disponível:** a função local de provisionamento declara o perfil e os grants esperados e não atribui perfil automaticamente. Houve relato anterior do usuário de que uma conta Compras autenticou e acessou a área `/compras`.
+- **Não comprovado:** que a associação daquela conta ocorreu após a validação exigida e mediante a autorização específica prevista nesta tarefa; o relato de acesso não comprova essa sequência nem validação do backend publicado.
+- **Motivo e dependências:** associação requer aprovação específica do usuário e depende das validações de endpoints/interface previstas anteriormente. Nenhuma associação foi realizada nesta revisão.
+- **Risco residual:** sem confirmação de escopo e autorização, não se deve inferir que a conta de demonstração está pronta para uso; não há evidência de acesso indevido.
+
+### Tarefa 4.8 — publicação do helper de escopo global
+
+- **Evidência disponível:** `Inventory/purchase_request_notification_all_access` existe como arquivo local e integra a ordem de publicação documentada.
+- **Não comprovado:** existência/publicação do helper no workspace 152211, branch `v1`, nem sua disponibilidade para os GETs publicados.
+- **Motivo e dependências:** exige inspeção remota somente de leitura e, se ausente, autorização para publicação seletiva; a inspeção remota não será repetida neste ciclo.
+- **Risco residual:** os endpoints remotos podem não resolver o helper ou podem divergir do escopo local; nenhum defeito remoto foi confirmado.
+
+### Tarefa 4.9 — grants, isolamento e paginação em `/stock/replenishment`
+
+- **Evidência disponível:** implementação local aplica escopo próprio/global e projeção restrita; testes locais com mocks cobrem casos de isolamento e compatibilidade, conforme registrados nas evidências desta change.
+- **Não comprovado:** respostas do endpoint publicado para leitor proprietário, leitor de terceiro, gestor e administrador, incluindo paginação e mudança de acesso.
+- **Motivo e dependências:** depende da publicação autorizada do helper e do endpoint, além de contas/sessões de teste com grants conhecidos e consultas de leitura no ambiente publicado.
+- **Risco residual:** isolamento, grants e paginação remotos não foram confirmados; não há evidência de exposição ou falha funcional em runtime. A proteção local não prova a configuração publicada.
+
+## Estado do ciclo
+
+As tarefas 2.3, 4.4, 4.5, 4.6, 4.8 e 4.9 permanecem pendentes. As evidências locais e os relatos do usuário foram preservados, mas não foram promovidos a validação remota independente. A change continua ativa; não houve consulta ou escrita no Xano, publicação, teste funcional remoto ou criação do relatório acadêmico final neste ciclo.

@@ -12,5 +12,5 @@
 - [x] 3.4 Exportar todas as páginas filtradas em PDF A4 paisagem, em memória, com limite total de 500 eventos e falha fechada diante de inconsistências.
 - [x] 3.5 Cobrir formatação, privacidade, paginação, limites, erros e integridade estrutural do PDF com testes locais.
 - [x] 4.1 Validar XanoScript, compilação Reflex, OpenSpec strict e diff.
-- [x] 4.2 Publicar seletivamente os componentes da Auditoria e confirmar a consulta como administrador.
-- [x] 4.3 Confirmar que um usuário sem perfil administrativo não consegue consultar a Auditoria.
+- [ ] 4.2 Publicar seletivamente os componentes da Auditoria e confirmar a consulta como administrador; não há evidência local suficiente para confirmar esses critérios.
+- [ ] 4.3 Confirmar que um usuário sem perfil administrativo não consegue consultar a Auditoria; não há evidência local suficiente para confirmar esse critério.

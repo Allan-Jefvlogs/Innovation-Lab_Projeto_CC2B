@@ -2,13 +2,28 @@
 
 ## Limites e evidências
 
-Implementação local revisada em 11/11/2026. O Xano continua autoridade para autorização, dados e operações. Nenhum objeto foi publicado nem executado remotamente. Os contratos novos são condicionados a flags locais desligadas por padrão até a publicação e configuração do marco. Validação MCP de XanoScript prova sintaxe reconhecida pelo validador, não importação ou runtime.
+### Registro histórico de implementação local — 2026-11-11
+
+Na revisão de 11/11/2026, nenhum objeto desta change tinha sido publicado ou executado remotamente. Naquele estado, os contratos novos eram condicionados a flags locais desligadas até publicação e configuração do marco. Essa anotação é histórica e não descreve o estado atual do código ou do Xano. Validação MCP de XanoScript comprova sintaxe reconhecida pelo validador, não importação ou runtime.
 
 ### Estado posterior reportado pelo usuário — 2026-11-14
 
-O usuário confirmou que o gráfico com dados reais e os períodos de 7 dias, 30 dias e 12 meses funciona; que notificações reais, contador, leitura individual e permissões funcionam; que a alteração de senha foi testada com logout, login pela nova senha e rejeição da senha anterior; e que `scripts/iniciar_nexstock_dev.ps1` habilita as três funcionalidades no processo local e foi validado. Esses resultados são relatos do usuário, não foram repetidos nesta etapa documental.
+O usuário informou que o gráfico com dados reais e os períodos de 7 dias, 30 dias e 12 meses funcionam; que notificações reais, contador, leitura individual e permissões funcionam; e que testou a alteração de senha com logout, login pela nova senha e rejeição da senha anterior. Também informou validação visual manual do Dashboard em desktop e viewport móvel em 16/11/2026. São relatos/aceitações do usuário, sem capturas ou logs independentes, e não foram repetidos nesta revisão documental.
 
-As flags continuam `false` por padrão nos arquivos e fora do launcher local explícito. Isso não representa ativação permanente em produção. Permanecem pendentes a revogação remota de tokens já emitidos, a comprovação de proteção em todas as superfícies de logs e a ativação permanente da alteração de senha. A comparação visual autenticada em desktop e viewport estreito também não foi concluída.
+### Estado conferido no código local — 2026-11-16
+
+- `NEXSTOCK_DASHBOARD_REAL_MOVEMENTS_ENABLED` tem padrão `true` em `Meu_projeto/pages/dashboard.py`.
+- `NEXSTOCK_PURCHASE_NOTIFICATIONS_ENABLED` tem padrão `true` em `Meu_projeto/state/dashboard_notifications.py`.
+- `NEXSTOCK_ACCOUNT_PASSWORD_ENABLED` tem padrão `false` em `Meu_projeto/pages/account_password.py`.
+- `scripts/iniciar_nexstock_dev.ps1` somente inicia o Reflex pela `.venv`; não define nem restaura essas três flags. `scripts/iniciar_teste_alteracao_senha.ps1` controla somente a flag da alteração de senha no processo local.
+
+Logo, a descrição histórica de que as três flags têm padrão `false` e de que o launcher de desenvolvimento as ativa está desatualizada. Esta reconciliação não altera defaults, launcher ou ambiente. Os módulos leem as flags ao importar; o valor efetivo também pode ser substituído pelo ambiente do processo que inicia o Reflex.
+
+A aceitação manual informada pelo usuário cobre o Dashboard autenticado em desktop a 1920 × 960 e a conferência do Dashboard em viewport móvel, suficiente para a tarefa geral 3.7. A dimensão efetivamente usada no viewport móvel não foi informada. Não há evidência específica de tablet ou de todos os detalhes da central rolável; a tarefa histórica específica de notificações permanece pendente. Não foram fornecidas capturas ou logs independentes, nem feitas novas verificações visuais ou remotas neste ciclo.
+
+Permanecem limitações: a matriz completa de autorização, propriedade, paginação, recibos de leitura, timezone, zero preenchido e comportamento do stream no Xano publicado não foi revalidada; a autorização efetiva do backend não é comprovada pelos guards Reflex; e a revogação de tokens de outras sessões não está implementada. Request History desabilitado e inputs sensíveis foram informados pelo usuário para o PATCH de senha, mas não comprovam mascaramento em Error Logs, debugger ou demais superfícies. Não se deve converter ausência de comprovação em falha funcional confirmada. Nenhuma nova tentativa remota será realizada neste ciclo.
+
+A antiga pendência de whitespace em `xano/api/inventory_catalog/users_by_id_inactivate_patch.xs` foi tratada anteriormente. A inspeção local atual não encontrou espaço ou tabulação final nesse arquivo; nenhuma alteração de XanoScript foi feita nesta reconciliação.
 
 ## Cabeçalho e saudação
 
@@ -54,7 +69,7 @@ Na central, a projeção paginada inclui itemsTotal/curPage/perPage. Cache disti
 
 A segunda consulta preserva as cinco movimentações recentes globais, ordenadas por `data_hora desc, id desc`, com produto/usuário e suas quantidades individuais. O envelope permanece `{serie: [{dia, entradas, saidas}], recentes: {items, curPage: 1, perPage: 5}}`. São duas declarações nativas de consulta de dados e um único GET do frontend, sem consulta em loop e sem filtro de período aplicado à lista de recentes. A documentação oficial descreve stream com foreach para reduzir uso de memória; comportamento do cursor, timezone, volume e resultado final ainda exigem validação no Xano publicado. Ver [grafico-xano-free.md](grafico-xano-free.md).
 
-Quando `NEXSTOCK_DASHBOARD_REAL_MOVEMENTS_ENABLED` está desligada (padrão), o Dashboard preserva a consulta antiga das movimentações recentes e informa que a série aguarda publicação; não apresenta dados demonstrativos. Após publicar o GET, a flag pode ligar o endpoint agregado, substituindo — não somando — o GET antigo. `NEXSTOCK_PURCHASE_NOTIFICATIONS_ENABLED` e `NEXSTOCK_ACCOUNT_PASSWORD_ENABLED` também permanecem desligadas por padrão. Conforme confirmado pelo usuário, o launcher de desenvolvimento define as três somente para seu processo e restaura os valores anteriores ao encerrar; isso não habilita as flags em produção.
+Historicamente, com `NEXSTOCK_DASHBOARD_REAL_MOVEMENTS_ENABLED=false`, o Dashboard preserva a consulta antiga das movimentações recentes e informa que a série aguarda publicação; não apresenta dados demonstrativos. O GET agregado substitui — não soma — a consulta antiga quando habilitado. O comportamento atual dos defaults e do launcher está registrado acima; esta seção descreve o contrato de fallback, não os valores atuais das flags.
 
 Com notificações habilitadas e permissão de leitura de compras, carga fria total prevê até cinco GETs de dados: produtos, estoque, resumo de compras, gráfico+recentes e notificações. Sem a permissão de compras, não há GET do resumo nem notificações. Validação de sessão é separada. Coordenador, orçamento e TTLs existentes não foram ampliados. Sem polling e sem chamadas em troca de aba.
 

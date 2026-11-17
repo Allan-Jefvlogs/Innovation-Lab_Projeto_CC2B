@@ -1,6 +1,6 @@
 # Recebimento vinculado — implementação local aprovada
 
-O desenho abaixo foi aprovado pelo usuário e implementado somente em arquivos locais. Nenhuma migração, publicação ou escrita remota foi realizada.
+O desenho abaixo foi aprovado pelo usuário e implementado inicialmente em arquivos locais. Posteriormente, o usuário relatou publicação dos seis documentos e testes de recebimento para o pedido #12; a origem e os limites desses relatos estão registrados em `publicacao-controlada.md`. Não há export remoto posterior nem evidência independente anexada a esta change.
 
 ## Evidências atuais
 
@@ -22,7 +22,7 @@ Em inventory_movement, acrescentar campos opcionais/nullable, sem backfill fict�
 
 Em purchase_request, acrescentar unidade_medida_solicitada nullable inicialmente. Novos pedidos preservariam a unidade validada no backend na criação. Pedidos anteriores com NULL exigiriam conferência explícita e procedimento autorizado antes de receber; não inferir unidade histórica nem marcar recebimento retroativo. A associação é escolhida expressamente pelo operador autorizado, nunca inferida por produto igual.
 
-Nenhuma tabela nova foi criada. Os campos foram acrescentados aos schemas locais; sua existência remota ainda não foi confirmada. Confirmar schema remoto, enums, tipos decimais e comportamento de múltiplos NULL do novo índice antes da migração autorizada. Não alterar índices ou dados remotos nesta etapa.
+Nenhuma tabela nova foi criada. Os campos foram acrescentados aos schemas locais. O usuário posteriormente confirmou visualmente no painel as definições das tabelas e relatou a presença dos índices de vínculo e UNIQUE; essa evidência informada não substitui export remoto para comparação integral. Confirmar enums, tipos decimais, nulabilidade efetiva e comportamento de múltiplos NULL do novo índice antes de considerar o contrato remoto plenamente verificado. Não alterar índices ou dados remotos nesta etapa.
 
 ## Evolução de POST /entries
 
@@ -58,7 +58,7 @@ Novos pedidos preservam unidade com um campo adicionado ao db.add do POST; o flu
 
 A Entrada consulta GET /purchase_requests por produto, com paginação de 20 e filtro local de estados elegíveis. Só consulta ao clicar, usa cache por sessão/escopo por 20 segundos e oferece Mais pedidos. Não há GET adicional na carga inicial, polling, seleção automática ou consultas por registro. A validação final é do POST, não do filtro visual.
 
-NEXSTOCK_PURCHASE_RECEIPTS_ENABLED é false por padrão. Habilitar somente após schema e APIs publicados/validados; nenhum .env foi alterado. Desligada, a entrada avulsa mantém o payload anterior.
+No código atual, `NEXSTOCK_PURCHASE_RECEIPTS_ENABLED` tem padrão `true`; um override explícito `false` desabilita a seleção de recebimento vinculado. A decisão anterior de manter a flag `false` por padrão era uma condição histórica de publicação e não descreve o código atual. O requisito operacional permanece: manter o override explicitamente em `false` em ambientes nos quais schema e APIs ainda não tenham sido conferidos/validados. Nenhum `.env` foi alterado nesta change. Desligada, a entrada avulsa mantém o payload anterior.
 
 A tentativa vinculada guarda UUID, payload original e fingerprint de sessão no State. Recuperação manual usa o mesmo payload. Timeout, 429, falha desconhecida ou resposta sem confirmação preservam a tentativa e bloqueiam entrada substituta. Rejeições explícitas RECEIPT_* anteriores a qualquer escrita permitem corrigir os dados; conflito de chave não descarta a tentativa. Recuperação exige a mesma sessão e permissões. Não há retry automático.
 

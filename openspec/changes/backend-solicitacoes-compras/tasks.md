@@ -1,8 +1,8 @@
 ## 1. Contrato e modelagem
 
-- [ ] 1.1 Revisar payloads, grupos de API, estados ativos/terminais e política de propriedade/cancelamento com o projeto.
+- [x] 1.1 Revisar payloads, grupos de API, estados ativos/terminais e política de propriedade/cancelamento com o projeto. Contratos e decisões locais consolidados em `design.md` e nesta spec; isso não atesta publicação ou autorização remota.
 - [ ] 1.2 Confirmar no workspace a disponibilidade de índices únicos, coluna anulável e tratamento de conflito, sem publicar alterações.
-- [ ] 1.3 Especificar `purchase_request`, histórico auditável e relação de Entradas confirmadas.
+- [x] 1.3 Especificar `purchase_request`, histórico auditável e relação de Entradas confirmadas. Modelo e relação local estão descritos em `design.md`/spec e refletidos nos artefatos locais; publicação e runtime permanecem pendentes.
 - [ ] 1.4 Definir grants no catálogo e matriz por perfil sem concedê-los automaticamente.
 
 ## 2. Persistência e integridade
@@ -27,7 +27,7 @@
 - [ ] 4.2 **Fora do escopo acadêmico / evolução futura:** comprovar em ambiente isolado repetição após timeout, duas criações simultâneas, conflito único e nenhuma duplicidade; não registrar como aprovado sem teste.
 - [ ] 4.3 **Fora do escopo acadêmico / evolução futura:** comprovar Entrada vinculada parcial/integral, rollback e invariantes de saldo, movimentos e solicitação; não registrar como aprovado sem teste.
 - [x] 4.4 Validar runtime no Xano e registrar versão/contrato publicado sem incluir credenciais nas evidências. Evidência manual informada pelo usuário em 2026-10-26: criação e cancelamento executados pela interface Reflex no workspace 152211 / branch `v1`; os GETs publicados e seus resultados runtime estão registrados nas seções anteriores de `design.md`. Esta tarefa não atesta idempotência, concorrência, rollback nem conferências independentes do histórico ou do saldo.
-- [ ] 4.5 Revisar riscos restantes e manter concorrência/rollback como limitações não comprovadas; os testes avançados não são bloqueio do aceite acadêmico decidido em 2026-10-25.
+- [x] 4.5 Revisar riscos restantes e manter concorrência/rollback como limitações não comprovadas; os testes avançados não são bloqueio do aceite acadêmico decidido em 2026-10-25. Riscos e dependências restantes foram consolidados em `design.md` sem declarar validação remota.
 
 ## 5. Destinatário de e-mail — fase local
 

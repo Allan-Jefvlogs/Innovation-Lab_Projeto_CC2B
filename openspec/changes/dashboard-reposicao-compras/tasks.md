@@ -1,14 +1,14 @@
 ﻿## 1. Preparação
 
-- [ ] 1.1 Aguardar revisão/publicação dos contratos de `backend-solicitacoes-compras` e concluir separadamente a validação manual de `integracao-dashboard-real`.
-- [ ] 1.2 Confirmar grants de leitura e criação definidos no catálogo Xano, sem presumir nem conceder grants.
+- [x] 1.1 Aguardar revisão/publicação dos contratos de `backend-solicitacoes-compras` e concluir separadamente a validação manual de `integracao-dashboard-real`.
+- [x] 1.2 Confirmar grants de leitura e criação definidos no catálogo Xano, sem presumir nem conceder grants.
 - [x] 1.3 Aprovar regra visual das duas listas, estados sem acesso e cancelamento de rascunho versus pedido persistido.
 
 ## 2. Interface compartilhada e Dashboard
 
 - [x] 2.1 Extrair marca geométrica do Login para componente compartilhado e reutilizá-la na sidebar sem alteração visual.
 - [x] 2.2 Remover apenas os cards de Categorias e Fornecedores e manter Produtos ativos, Movimentações recentes e Alertas.
-- [ ] 2.3 Integrar contagem de estoque insuficiente incluindo saldo zero, somente Produtos ativos.
+- [x] 2.3 Integrar contagem de estoque insuficiente incluindo saldo zero, somente Produtos ativos.
 - [x] 2.4 Integrar contagem de solicitações abertas sujeita a `purchase_request.read`.
 - [x] 2.5 Tornar o card Estoque insuficiente navegável para Reposição e ajustar as colunas Quantidade/Data.
 
@@ -35,4 +35,4 @@
 - [x] 5.2 Manter o payload legado enquanto a flag estiver desativada; bloquear endereço preenchido nesse modo e preparar assinatura idempotente com o destinatário quando habilitado.
 - [x] 5.3 Testar compatibilidade antiga/nova, validação, estado em andamento e invalidação de cache sem chamadas reais.
 - [ ] 5.4 Validar no navegador após publicar o POST de transição: fluxo legado sem campo, formulário habilitado com endereço persistido e pedidos antigos com NULL; manter a obrigatoriedade backend para etapa posterior.
-- [ ] 5.5 Implementar envio original e aviso de cancelamento somente após desenho/aprovação de entrega e validação de envio inicial confirmado.
+- [x] 5.5 Implementar envio original e aviso de cancelamento somente após desenho/aprovação de entrega e validação de envio inicial confirmado.

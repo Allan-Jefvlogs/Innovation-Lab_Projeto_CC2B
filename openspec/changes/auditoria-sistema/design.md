@@ -44,11 +44,30 @@ A atomicidade foi revisada estruturalmente: as mutacoes auditadas e seus eventos
 
 A funcao Inventory/record_audit_event nao e chamada por nenhum endpoint. Ela fica fora do escopo desta publicacao seletiva; o arquivo local sera preservado, sem ser incluido no push.
 
-Os endpoints de cria??o, mudan?a de status e cancelamento de Solicita??es de Compras permanecem fora desta change por estarem sob trabalho coordenado de e-mail. Sua instrumenta??o ? condi??o pendente para cobertura completa e publica??o da funcionalidade Auditoria.
+## Escopo fora desta entrega
+
+Entradas e saídas de estoque, solicitações de compra e eventos de e-mail permanecem fora do escopo atual desta change de Auditoria, conforme a decisão registrada na proposta e na tarefa 2.3. Essa exclusão não é uma pendência de implementação desta entrega. Os fluxos de entrada e saída mantêm suas gravações existentes de saldo e `inventory_movement`, sem criar eventos em `inventory_audit_log`. Solicitações de compra e eventos de e-mail não são instrumentados por esta change.
 
 ## Publicação
 
 A tabela inventory_audit_log ja existe no workspace 152211, branch v1, ID 913875, conforme confirmado pelo usuario; nao inclui-la no push. Publicar seletivamente apenas os endpoints locais restantes de catalogo/admin e GET /audit_logs, depois de revisar o dry-run. Nao incluir entradas/saidas, solicitacoes de compra, eventos de e-mail nem Inventory/record_audit_event. A verificacao de autorizacao e consulta no Xano permanece pendente.
 
-## Escopo final para movimentacoes de estoque
-Entradas e saidas nao geram eventos em inventory_audit_log nesta entrega, independentemente de eventual relacao com compras. O saldo e os registros inventory_movement continuam sendo gravados pelos fluxos existentes e seguem disponiveis em Relatorios via GET /movements. Solicita??es de compra e eventos de e-mail permanecem fora do escopo. Nenhuma classificacao por motivo, observacao ou descricao e usada.
+## Limitações e riscos residuais — ciclo atual
+
+### Tarefa 2.4 — atomicidade em runtime
+
+- **Implementação/evidência disponível:** os endpoints locais instrumentados colocam as gravações de negócio e o `db.add inventory_audit_log` dentro de `db.transaction`. `tests/test_audit_atomicity_contract.py` verifica essa estrutura estática; não executa Xano nem demonstra rollback.
+- **Verificação ausente:** não foi executada uma falha induzida durante a gravação do evento para confirmar que o Xano reverte a mutação de negócio.
+- **Motivo e tentativas:** o teste de rollback no Xano live foi dispensado anteriormente; não há uma tentativa de runtime malsucedida registrada. O código foi revisado estruturalmente, mas isso não substitui o teste.
+- **Risco residual:** se o runtime não reverter a transação como esperado, uma mutação poderia persistir sem seu evento de auditoria. Não há falha desse tipo confirmada.
+- **Condição para comprovação:** executar o teste somente em ambiente seguro e com autorização específica. Nenhuma nova tentativa será feita neste ciclo, conforme decisão do usuário.
+
+### Tarefas 4.2 e 4.3 — publicação e autorização remotas
+
+- **Implementação/evidência disponível:** o endpoint local `GET /audit_logs` exige autenticação e chama `Inventory/authorize_permission` com `administrator`; o código da interface também restringe a consulta ao administrador. As tarefas estavam marcadas como concluídas, mas a busca nos registros locais não encontrou saídas, capturas ou relatório que comprove a publicação e os resultados dos testes remotos.
+- **Verificação ausente:** comprovação de que os endpoints seletivos foram publicados; resposta de uma consulta autorizada como administrador; e rejeição de uma consulta feita sem perfil administrativo. O design já registrava a verificação remota de consulta/autorização como pendente.
+- **Motivo e tentativas:** não há resultados documentados que permitam confirmar esses critérios. A presença do contrato local e as marcações anteriores não provam a versão publicada nem o comportamento remoto. Nenhuma nova consulta será feita neste ciclo, conforme decisão do usuário.
+- **Risco residual:** a definição remota pode divergir do código local ou a autorização publicada pode não corresponder ao contrato esperado. Isso é ausência de comprovação, não falha funcional confirmada.
+- **Condição para comprovação:** obter evidência de publicação e executar, com contas autorizadas apropriadas, somente as consultas de leitura necessárias; preservar apenas status e contexto não sensível no registro.
+
+As limitações acima mantêm as tarefas 2.4, 4.2 e 4.3 abertas. Não há falha de rollback ou de autorização remota confirmada; há critérios sem evidência suficiente. Não serão realizadas novas tentativas para essas pendências durante este ciclo.

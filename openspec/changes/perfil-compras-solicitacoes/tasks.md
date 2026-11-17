@@ -7,7 +7,7 @@ Entrega acadêmica com um único operador alterando compras por vez. SQL direto 
 ## Revisão e preparação local
 
 - [x] 1.1 Revisar esta proposta e confirmar grants fixos do perfil Compras e mudança de escopo dos GETs existentes.
-- [ ] 1.2 Conferir por leitura perfil, catálogo, grants, status e referências no Xano publicado antes de qualquer provisionamento.
+- [x] 1.2 Conferir por leitura perfil, catálogo, grants, status e referências no Xano publicado antes de qualquer provisionamento.
 - [x] 1.3 Preparar provisionamento seletivo de `compras` e `purchase_request.status.update`, sem seed geral nem atribuição automática a usuários (função interna local, não executada).
 - [x] 1.4 Adaptar matriz `GET /permissions` e política da página Perfis para apresentar o perfil Compras sem liberar grants gerais, localmente.
 
@@ -28,8 +28,8 @@ Entrega acadêmica com um único operador alterando compras por vez. SQL direto 
 
 ## Validação e publicação futura
 
-- [ ] 4.1 Testar grants e rotas com Compras, administrador, leitor isolado e demais perfis; negar acesso por URL e API.
-- [ ] 4.2 Testar lista/detalhe, paginação, filtros, transições, rejeição, erros e cancelamento; confirmar ausência de escrita em estoque/Auditoria.
+- [x] 4.1 Testar grants e rotas com Compras, administrador, leitor isolado e demais perfis; negar acesso por URL e API.
+- [x] 4.2 Testar lista/detalhe, paginação, filtros, transições, rejeição, erros e cancelamento; confirmar ausência de escrita em estoque/Auditoria.
 - [x] 4.3 Validar localmente XanoScript por MCP, testes Reflex/Python, compile, OpenSpec strict e diff check; a nova revisão nativa deve registrar seus resultados ao final. Validação funcional permanece nos itens 2.3 e 4.5.
 - [ ] 4.4 Preparar dry-runs seletivos, revisar impacto dos GETs nos consumidores e obter autorização separada antes de publicar.
 - [ ] 4.5 Validar no Xano publicado os fluxos sequenciais, histórico, liberação do índice ativo e rejeição de estado já desatualizado; registrar que concorrência e rollback induzido não foram comprovados nem exigidos nesta entrega.

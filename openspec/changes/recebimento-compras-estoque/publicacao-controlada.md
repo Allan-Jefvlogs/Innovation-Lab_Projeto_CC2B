@@ -1,4 +1,4 @@
-# Migração e publicação futura — não executada
+# Plano e histórico de publicação controlada
 
 ## Preparação somente de leitura
 
@@ -30,7 +30,7 @@ Todos os seis objetos já existem no export. Os caminhos abaixo são relativos �
 - No export estão presentes authorize_permission, purchase_request_notification_all_access, purchase_request_history, purchase_request_email_delivery e os helpers de e-mail utilizados pelo POST. Não há dependência nova de dispatcher executado por este lote.
 - O fluxo de recebimento usa operações nativas, sem Direct Database Query. A declaração nullable/UNIQUE é compatível com a proposta, mas múltiplos NULL, integridade referencial efetiva e rollback não foram testados no banco live. Pedidos antigos sem unidade permanecem sem inferência automática e não podem receber vínculo até confirmação autorizada.
 
-**Decisão:** os seis arquivos podem ser inspecionados pelos dry-runs abaixo, um por vez, conferindo identidade dos objetos, ausência de remoções e dependências. A diferença nos códigos de falha de entries deve ser aceita na revisão antes de publicar. Não habilitar a flag nem publicar com base apenas nesta comparação ou na validação sintática.
+**Decisão registrada naquela revisão:** os seis arquivos poderiam ser inspecionados pelos dry-runs abaixo, um por vez, conferindo identidade dos objetos, ausência de remoções e dependências. A diferença nos códigos de falha de entries deveria ser aceita antes de publicar. Naquele momento, não havia dry-run ou publicação nessa revisão. Os relatos posteriores do usuário estão separados ao final deste documento e não alteram retroativamente essa constatação histórica.
 
 A inspeção somente de leitura do código instalado da CLI confirma directory/workspace/branch no pull, env=false e records=false por padrão; no push confirma include/directory/dry-run/no-guids. Isso confirma a sintaxe preparada, não a conexão ou autenticação remota.
 
@@ -67,7 +67,7 @@ Não usar sync/delete/records/env/force. Não publicar PATCH de status/cancelame
 1. Conferir e adicionar unidade_medida_solicitada nullable na compra, sem preencher pedidos antigos.
 2. Conferir e adicionar vínculo nullable purchase_request_id, chave_recebimento nullable UNIQUE e unidade_medida nullable na movimentação. Confirmar referências e múltiplos NULL antes de ativar, sem default 0 ou string vazia. Não remover índices anteriores.
 3. Publicar seletivamente POST de compras (delta desta etapa: um campo de snapshot no db.add), GETs e POST /entries, nessa ordem. Comparar as versões remotas para preservar e-mail e outras mudanças já publicadas.
-4. Manter NEXSTOCK_PURCHASE_RECEIPTS_ENABLED=false até APIs/schema validados. Só então habilitar no frontend. Nenhum .env foi alterado nesta implementação.
+4. **Plano histórico anterior aos relatos de publicação:** manter `NEXSTOCK_PURCHASE_RECEIPTS_ENABLED=false` até APIs/schema validados. O código local atual tem padrão `true`; portanto, para manter a proteção operacional enquanto a verificação remota independente estiver incompleta, definir explicitamente `false` no ambiente do processo. Nenhum `.env` foi alterado nesta implementação.
 
 Sem novo endpoint de estoque. O payload avulso anterior é preservado; a resposta do POST é aditiva. Não há endpoint para confirmar unidade histórica nesta entrega: pedidos antigos NULL exigem conferência e procedimento autorizado separado ou entrada avulsa.
 
@@ -89,3 +89,54 @@ Em falha de preview/migração/teste, parar e manter flag desligada. Não apagar
 Não restaurar o endpoint antigo de Entrada enquanto houver recebimentos em andamento ou tentativas ambíguas: ele pode ignorar campos novos e registrar entrada avulsa sem idempotência. A flag não deve ser habilitada contra essa versão. Resposta HTTP 200 sem contrato de recebimento confirmado bloqueia também a recuperação por POST, exigindo conferência por leitura antes de reenviar; não basta o cliente rejeitar a resposta após uma possível gravação.
 
 Timeout após possível commit exige reconciliação da chave/movimento/pedido. No mesmo State, Recuperar recebimento reutiliza chave e payload. A tentativa não tem persistência durável independente: se State expirar ou servidor reiniciar, conferir por leitura antes de registrar outra entrada equivalente. Não criar nova chave automaticamente e não afirmar exatamente uma execução comprovada em runtime.
+
+## Atualização histórica — relatos posteriores do usuário
+
+Os registros abaixo são relatos fornecidos pelo usuário nesta conversa do projeto. Não foram executados nem verificados independentemente pelo Codex; não há saídas brutas, capturas do painel ou logs anexados a este documento. As datas dessas ações não foram informadas. Eles complementam o retrato de preparação de 12/11/2026 acima, sem transformar aquela revisão em evidência de publicação ou runtime.
+
+O usuário confirmou manualmente que inspecionou as definições das tabelas `purchase_request` e `inventory_movement` no workspace **152211**, branch **v1**, datasource **live**. Também informou anteriormente que os campos de recebimento e os índices de consulta/UNIQUE estavam visíveis no painel. Como as capturas ou um export das definições não foram anexados, este registro comprova somente que houve essa confirmação informada; não permite revisar cada propriedade remota nem afirmar que a visão permanece atual.
+
+### Seis previews seletivos
+
+O usuário informou que concluiu os seis dry-runs e observou:
+
+| Objeto | Resultado informado |
+| --- | --- |
+| `purchase_request` | UPDATE + 1 ADD_FIELD |
+| `inventory_movement` | UPDATE + 3 ADD_FIELD |
+| POST `/purchase_requests` | UPDATE |
+| GET `/purchase_requests` | UPDATE |
+| GET `/purchase_requests/by_id/{request_id}` | UPDATE |
+| POST `/entries` | UPDATE |
+
+Segundo o mesmo relato, nenhum preview indicou exclusão ou criação de tabelas. O resumo não documenta os detalhes completos dos previews, GUIDs, referências não resolvidas ou todos os critérios de revisão; portanto, não comprova por si só a identidade integral dos objetos nem a aplicação das alterações.
+
+### Publicação e testes funcionais relatados
+
+O usuário informou posteriormente que os seis documentos foram publicados e que os índices de `purchase_request_id` e UNIQUE de `chave_recebimento` apareciam no painel Xano. Essa confirmação é visual e informada pelo usuário; não há export remoto posterior anexado para comparação nesta change. A existência visual do índice não comprova que ele aceite múltiplos valores NULL.
+
+O usuário relatou dois resultados de recebimento real para a solicitação #12 do produto Caderno, com quantidade solicitada de 30 CX: primeiro, recebimento vinculado parcial de 2 CX, com status parcial e 28 CX restantes; depois, confirmação de que o teste de conclusão também funcionou. A data e os detalhes da segunda quantidade recebida não foram registrados. Esses relatos demonstram somente os cenários descritos pelo usuário; não equivalem à matriz de testes com registros fictícios, não comprovam casos de falha/rollback, idempotência sob concorrência, isolamento de autorização ou comportamento de múltiplos NULL e não devem ser generalizados para esses casos.
+
+## Pendências e limite de tentativas
+
+### Tarefa 4 — metadados e índice
+
+1. **Consulta automatizada anterior:** a Xano CLI falhou com `uv_os_get_passwd returned ENOMEM`. A leitura não foi repetida nesta etapa para respeitar a limitação já observada.
+2. **Inspeção manual relatada:** o usuário confirmou que examinou as duas tabelas e viu os campos/índices esperados. Sem capturas ou export, não foi possível comparar todas as propriedades. A inspeção visual do índice UNIQUE não demonstra que o banco aceite vários `NULL`.
+
+Após essas duas tentativas documentadas, permanecem sem comprovação independente: export atual completo, nulabilidade efetiva, comportamento com múltiplos `NULL`, constraints efetivas e rollback. Não fazer escrita live para testar esses itens. A tarefa 4 continua aberta; uma nova tentativa requer evidência ou mecanismo seguro novo, não repetição do mesmo caminho.
+
+### Tarefa 10 — runtime com dados fictícios
+
+1. **Validação local:** os testes e simulações documentados nesta change cobrem contratos e sequências no código local, mas não executam Xano.
+2. **Recebimentos relatados:** o usuário informou os resultados parcial e total para o pedido real #12; esses casos não usaram registros fictícios e não cobrem os cenários negativos e de autorização exigidos.
+
+Não há evidência registrada de datasource isolado ou de execução completa com registros fictícios e autorização específica. Como os relatos existentes não satisfazem os critérios e uma nova escrita live não está autorizada neste diagnóstico, a tarefa 10 permanece aberta. Não repetir teste real para preencher essa lacuna.
+
+## Situação do arquivamento OpenSpec
+
+Na configuração do projeto (`openspec/config.yaml`), a orientação de arquivamento exige confirmar que as tarefas da change foram concluídas. O CLI instalado permite iniciar `openspec archive recebimento-compras-estoque` com tarefas abertas, mas avisa e pede confirmação; em modo JSON, bloqueia sem `--yes`. O uso de `--yes` ignora o bloqueio de tarefas e não é uma conclusão válida das pendências. O validador de mudanças arquivadas (`openspec validate --archived`) sinaliza tarefas não concluídas como erro. Portanto, embora o CLI tecnicamente permita prosseguir após confirmação/bypass, arquivar agora contrariaria a orientação do projeto e deixaria a change arquivada inválida no strict. Recomendação: manter ativa com as tarefas 4 e 10 abertas, sem contornar o controle.
+
+### Estado atual da flag
+
+O código local atual usa `NEXSTOCK_PURCHASE_RECEIPTS_ENABLED` com padrão `true`; definir explicitamente `false` no ambiente do processo desabilita a funcionalidade. As instruções anteriores para manter `false` por padrão refletem uma decisão histórica de liberação. Como a conferência independente do contrato remoto atual e do comportamento de múltiplos NULL permanece pendente, ambientes sem essa evidência devem usar o override explícito `false` até a validação adequada. Não foi alterado `.env` nesta change.
