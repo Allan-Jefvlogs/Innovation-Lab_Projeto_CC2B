@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import SimpleNamespace
 import inspect
@@ -240,6 +241,37 @@ class DashboardIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.products_count, 6)
         self.assertTrue(state.products_stale)
         self.assertIn("desatualizado", state.products_detail)
+
+    async def test_hanging_source_finishes_loading_without_fabricating_values(self):
+        state = _state(grants={"products": True, "stock": True, "movements": False})
+
+        async def never_returns(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(dashboard_module, "DASHBOARD_READ_TIMEOUT_SECONDS", 0.01),
+            patch.object(dashboard_module, "DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED", False),
+            patch.object(auth_client, "list_products", side_effect=never_returns),
+            patch.object(auth_client, "list_stock", new_callable=AsyncMock, return_value={"items": [], "itemsTotal": 3}),
+        ):
+            await asyncio.wait_for(_drain(state.load_dashboard()), timeout=1)
+
+        self.assertFalse(state.is_loading)
+        self.assertIsNone(state.products_count)
+        self.assertEqual(state.products_value, "Indisponível")
+        self.assertEqual(state.below_minimum_count, 3)
+        self.assertIn("products", state.retry_sources)
+        self.assertTrue(state.error_message)
+
+    async def test_unexpected_loading_error_clears_spinner_and_allows_retry(self):
+        state = _state()
+        object.__setattr__(state, "_session", AsyncMock(side_effect=RuntimeError("simulated")))
+
+        await _drain(state.load_dashboard())
+
+        self.assertFalse(state.is_loading)
+        self.assertTrue(state.error_message)
+        self.assertIn("products", state.retry_sources)
 
     async def test_successful_write_invalidates_dashboard_cache_but_failed_write_does_not(self):
         token = "write-cache-session"

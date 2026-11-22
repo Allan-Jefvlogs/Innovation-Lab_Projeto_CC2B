@@ -66,6 +66,7 @@ def _cache_ttl(name: str, default: float) -> float:
 DASHBOARD_PRODUCT_TTL = _cache_ttl("NEXSTOCK_DASHBOARD_PRODUCTS_TTL_SECONDS", 30.0)
 DASHBOARD_REFERENCE_TTL = _cache_ttl("NEXSTOCK_DASHBOARD_REFERENCE_TTL_SECONDS", 120.0)
 DASHBOARD_OPERATIONAL_TTL = _cache_ttl("NEXSTOCK_DASHBOARD_OPERATIONAL_TTL_SECONDS", 15.0)
+DASHBOARD_READ_TIMEOUT_SECONDS = 30.0
 DASHBOARD_ALERT_LIMIT = 5
 DASHBOARD_MOVEMENT_LIMIT = 5
 DASHBOARD_INSUFFICIENT_SUMMARY_ENABLED = os.getenv(
@@ -167,7 +168,12 @@ async def _cached_dashboard_read(
         return cached, False, None
 
     try:
-        result = await loader()
+        result = await asyncio.wait_for(loader(), timeout=DASHBOARD_READ_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        error = XanoConnectionError("Tempo limite ao consultar os dados do Dashboard.")
+        if cached is not CACHE_MISS:
+            return cached, True, error
+        raise error from exc
     except (XanoAuthError, XanoPermissionError):
         session_read_cache.invalidate(endpoint=_dashboard_endpoint(source), token=token)
         raise
@@ -562,6 +568,19 @@ class DashboardState(rx.State):
         return {"items": movements}
 
     async def load_dashboard(self, retry_failed_only: bool = False):
+        try:
+            async for event in self._load_dashboard_impl(retry_failed_only):
+                yield event
+        except Exception as exc:
+            logger.warning("Dashboard load interrupted: exception_type=%s", type(exc).__name__)
+            self.is_loading = False
+            self.error_message = "Não foi possível atualizar o Dashboard. Tente novamente."
+            self.retry_sources = list(_DASHBOARD_ENDPOINTS)
+            yield
+        finally:
+            self.is_loading = False
+
+    async def _load_dashboard_impl(self, retry_failed_only: bool = False):
         if self.is_loading or self.chart_loading:
             return
         if retry_failed_only and self.retry_after_epoch > time.time():
